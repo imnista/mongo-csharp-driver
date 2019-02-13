@@ -1,4 +1,4 @@
-﻿/* Copyright 2010-2014 MongoDB Inc.
+﻿/* Copyright 2010-present MongoDB Inc.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -161,12 +161,12 @@ namespace MongoDB.Driver.Core.Operations
 
         public BulkWriteOperationResult CreateResultOrThrowIfHasErrors(ConnectionId connectionId, IReadOnlyList<WriteRequest> remainingRequests)
         {
-            if (_batchResults.Any(r => r.HasWriteErrors || r.HasWriteConcernError))
+            if (_batchResults.Any(r => r.HasWriteErrors || r.HasWriteConcernError) && _isAcknowledged)
             {
                 throw CreateBulkWriteException(connectionId, remainingRequests);
             }
 
-            return CreateBulkWriteResult(0);
+            return CreateBulkWriteResult(remainingRequests.Count);
         }
     }
 }

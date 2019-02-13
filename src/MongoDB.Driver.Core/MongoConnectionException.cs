@@ -1,4 +1,4 @@
-﻿/* Copyright 2010-2014 MongoDB Inc.
+/* Copyright 2010-present MongoDB Inc.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -14,7 +14,9 @@
 */
 
 using System;
+#if NET452
 using System.Runtime.Serialization;
+#endif
 using MongoDB.Driver.Core.Connections;
 using MongoDB.Driver.Core.Misc;
 
@@ -23,7 +25,9 @@ namespace MongoDB.Driver
     /// <summary>
     /// Represents a MongoDB connection exception.
     /// </summary>
+#if NET452
     [Serializable]
+#endif
     public class MongoConnectionException : MongoException
     {
         // fields
@@ -49,9 +53,10 @@ namespace MongoDB.Driver
         public MongoConnectionException(ConnectionId connectionId, string message, Exception innerException)
             : base(message, innerException)
         {
-            _connectionId = Ensure.IsNotNull(connectionId, "connectionId");
+            _connectionId = Ensure.IsNotNull(connectionId, nameof(connectionId));
         }
 
+#if NET452
         /// <summary>
         /// Initializes a new instance of the <see cref="MongoConnectionException"/> class.
         /// </summary>
@@ -62,6 +67,7 @@ namespace MongoDB.Driver
         {
             _connectionId = (ConnectionId)info.GetValue("_connectionId", typeof(ConnectionId));
         }
+#endif
 
         // properties
         /// <summary>
@@ -73,11 +79,13 @@ namespace MongoDB.Driver
         }
 
         // methods
+#if NET452
         /// <inheritdoc/>
         public override void GetObjectData(SerializationInfo info, StreamingContext context)
         {
             base.GetObjectData(info, context);
             info.AddValue("_connectionId", _connectionId);
         }
+#endif
     }
 }

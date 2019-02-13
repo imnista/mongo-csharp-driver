@@ -1,4 +1,4 @@
-﻿/* Copyright 2013-2014 MongoDB Inc.
+/* Copyright 2013-present MongoDB Inc.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -44,7 +44,7 @@ namespace MongoDB.Driver.Core.WireProtocol.Messages.Encoders.JsonEncoders
         public InsertMessageJsonEncoder(TextReader textReader, TextWriter textWriter, MessageEncoderSettings encoderSettings, IBsonSerializer<TDocument> serializer)
             : base(textReader, textWriter, encoderSettings)
         {
-            _serializer = Ensure.IsNotNull(serializer, "serializer");
+            _serializer = Ensure.IsNotNull(serializer, nameof(serializer));
         }
 
         // methods
@@ -105,23 +105,7 @@ namespace MongoDB.Driver.Core.WireProtocol.Messages.Encoders.JsonEncoders
         /// <param name="message">The message.</param>
         public void WriteMessage(InsertMessage<TDocument> message)
         {
-            Ensure.IsNotNull(message, "message");
-
-            BsonValue documents;
-            if (message.DocumentSource.Batch == null)
-            {
-                documents = BsonNull.Value;
-            }
-            else
-            {
-                var array = new BsonArray();
-                foreach (var document in message.DocumentSource.Batch)
-                {
-                    var wrappedDocument = new BsonDocumentWrapper(document, _serializer);
-                    array.Add(wrappedDocument);
-                }
-                documents = array;
-            }
+            Ensure.IsNotNull(message, nameof(message));
 
             var messageDocument = new BsonDocument
             {
@@ -132,7 +116,7 @@ namespace MongoDB.Driver.Core.WireProtocol.Messages.Encoders.JsonEncoders
                 { "maxBatchCount", message.MaxBatchCount },
                 { "maxMessageSize", message.MaxMessageSize },
                 { "continueOnError", message.ContinueOnError },
-                { "documents", documents }
+                { "documents", WrapDocuments(message) }
             };
 
             var jsonWriter = CreateJsonWriter();
@@ -149,6 +133,28 @@ namespace MongoDB.Driver.Core.WireProtocol.Messages.Encoders.JsonEncoders
         void IMessageEncoder.WriteMessage(MongoDBMessage message)
         {
             WriteMessage((InsertMessage<TDocument>)message);
+        }
+
+        // private methods
+        private BsonArray WrapDocuments(InsertMessage<TDocument> message)
+        {
+            var documentSource = message.DocumentSource;
+            var batchCount = Math.Min(documentSource.Count, message.MaxBatchCount);
+            if (batchCount < documentSource.Count && !documentSource.CanBeSplit)
+            {
+                throw new BsonSerializationException("Batch is too large.");
+            }
+
+            var wrappedDocuments = new BsonArray(batchCount);
+            for (var i = 0; i < batchCount; i++)
+            {
+                var document = documentSource.Items[documentSource.Offset + i];
+                var wrappedDocument = new BsonDocumentWrapper(document, _serializer);
+                wrappedDocuments.Add(wrappedDocument);
+            }
+            documentSource.SetProcessedCount(batchCount);
+
+            return wrappedDocuments;
         }
     }
 }

@@ -1,4 +1,4 @@
-﻿/* Copyright 2010-2014 MongoDB Inc.
+﻿/* Copyright 2010-present MongoDB Inc.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -15,6 +15,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Reflection;
 using MongoDB.Bson.Serialization.Serializers;
 
 namespace MongoDB.Bson.Serialization
@@ -22,7 +23,7 @@ namespace MongoDB.Bson.Serialization
     /// <summary>
     /// Provides serializers for BsonValue and its derivations.
     /// </summary>
-    public class BsonObjectModelSerializationProvider : IBsonSerializationProvider
+    public class BsonObjectModelSerializationProvider : BsonSerializationProviderBase
     {
         private static readonly Dictionary<Type, IBsonSerializer> __serializers;
 
@@ -34,6 +35,7 @@ namespace MongoDB.Bson.Serialization
                 { typeof(BsonBinaryData), BsonBinaryDataSerializer.Instance },
                 { typeof(BsonBoolean), BsonBooleanSerializer.Instance },
                 { typeof(BsonDateTime), BsonDateTimeSerializer.Instance },
+                { typeof(BsonDecimal128), BsonDecimal128Serializer.Instance },
                 { typeof(BsonDocument), BsonDocumentSerializer.Instance },
                 { typeof(BsonDocumentWrapper), BsonDocumentWrapperSerializer.Instance },
                 { typeof(BsonDouble), BsonDoubleSerializer.Instance },
@@ -54,20 +56,15 @@ namespace MongoDB.Bson.Serialization
             };
         }
 
-        /// <summary>
-        /// Gets a serializer for a type.
-        /// </summary>
-        /// <param name="type">The type.</param>
-        /// <returns>
-        /// A serializer.
-        /// </returns>
-        public IBsonSerializer GetSerializer(Type type)
+        /// <inheritdoc/>
+        public override IBsonSerializer GetSerializer(Type type, IBsonSerializerRegistry serializerRegistry)
         {
             if (type == null)
             {
                 throw new ArgumentNullException("type");
             }
-            if (type.IsGenericType && type.ContainsGenericParameters)
+            var typeInfo = type.GetTypeInfo();
+            if (typeInfo.IsGenericType && typeInfo.ContainsGenericParameters)
             {
                 var message = string.Format("Generic type {0} has unassigned type parameters.", BsonUtils.GetFriendlyTypeName(type));
                 throw new ArgumentException(message, "type");

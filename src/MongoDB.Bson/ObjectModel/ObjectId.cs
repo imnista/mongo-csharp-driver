@@ -1,4 +1,4 @@
-﻿/* Copyright 2010-2014 MongoDB Inc.
+/* Copyright 2010-present MongoDB Inc.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -17,8 +17,6 @@ using System;
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Security;
-using System.Security.Cryptography;
-using System.Text;
 using System.Threading;
 
 namespace MongoDB.Bson
@@ -26,39 +24,21 @@ namespace MongoDB.Bson
     /// <summary>
     /// Represents an ObjectId (see also BsonObjectId).
     /// </summary>
+#if NET452
     [Serializable]
+#endif
     public struct ObjectId : IComparable<ObjectId>, IEquatable<ObjectId>, IConvertible
     {
         // private static fields
-        private static ObjectId __emptyInstance = default(ObjectId);
-        private static int __staticMachine;
-        private static short __staticPid;
-        private static int __staticIncrement; // high byte will be masked out when generating new ObjectId
+        private static readonly ObjectId __emptyInstance = default(ObjectId);
+        private static readonly int __staticMachine = (GetMachineHash() + GetAppDomainId()) & 0x00ffffff;
+        private static readonly short __staticPid = GetPid();
+        private static int __staticIncrement = (new Random()).Next();
 
         // private fields
-        // we're using 14 bytes instead of 12 to hold the ObjectId in memory but unlike a byte[] there is no additional object on the heap
-        // the extra two bytes are not visible to anyone outside of this class and they buy us considerable simplification
-        // an additional advantage of this representation is that it will serialize to JSON without any 64 bit overflow problems
-        private int _timestamp;
-        private int _machine;
-        private short _pid;
-        private int _increment;
-
-        // static constructor
-        static ObjectId()
-        {
-            __staticMachine = (GetMachineHash() + AppDomain.CurrentDomain.Id) & 0x00ffffff; // add AppDomain Id to ensure uniqueness across AppDomains
-            __staticIncrement = (new Random()).Next();
-
-            try
-            {
-                __staticPid = (short)GetCurrentProcessId(); // use low order two bytes only
-            }
-            catch (SecurityException)
-            {
-                __staticPid = 0;
-            }
-        }
+        private readonly int _a;
+        private readonly int _b;
+        private readonly int _c;
 
         // constructors
         /// <summary>
@@ -71,7 +51,12 @@ namespace MongoDB.Bson
             {
                 throw new ArgumentNullException("bytes");
             }
-            Unpack(bytes, out _timestamp, out _machine, out _pid, out _increment);
+            if (bytes.Length != 12)
+            {
+                throw new ArgumentException("Byte array must be 12 bytes long", "bytes");
+            }
+
+            FromByteArray(bytes, 0, out _a, out _b, out _c);
         }
 
         /// <summary>
@@ -81,10 +66,7 @@ namespace MongoDB.Bson
         /// <param name="index">The index into the byte array where the ObjectId starts.</param>
         internal ObjectId(byte[] bytes, int index)
         {
-            _timestamp = (bytes[index] << 24) | (bytes[index + 1] << 16) | (bytes[index + 2] << 8) | bytes[index + 3];
-            _machine = (bytes[index + 4] << 16) | (bytes[index + 5] << 8) | bytes[index + 6];
-            _pid = (short)((bytes[index + 7] << 8) | bytes[index + 8]);
-            _increment = (bytes[index + 9] << 16) | (bytes[index + 10] << 8) | bytes[index + 11];
+            FromByteArray(bytes, index, out _a, out _b, out _c);
         }
 
         /// <summary>
@@ -117,10 +99,9 @@ namespace MongoDB.Bson
                 throw new ArgumentOutOfRangeException("increment", "The increment value must be between 0 and 16777215 (it must fit in 3 bytes).");
             }
 
-            _timestamp = timestamp;
-            _machine = machine;
-            _pid = pid;
-            _increment = increment;
+            _a = timestamp;
+            _b = (machine << 8) | (((int)pid >> 8) & 0xff);
+            _c = ((int)pid << 24) | increment;
         }
 
         /// <summary>
@@ -133,7 +114,9 @@ namespace MongoDB.Bson
             {
                 throw new ArgumentNullException("value");
             }
-            Unpack(BsonUtils.ParseHexString(value), out _timestamp, out _machine, out _pid, out _increment);
+
+            var bytes = BsonUtils.ParseHexString(value);
+            FromByteArray(bytes, 0, out _a, out _b, out _c);
         }
 
         // public static properties
@@ -151,7 +134,7 @@ namespace MongoDB.Bson
         /// </summary>
         public int Timestamp
         {
-            get { return _timestamp; }
+            get { return _a; }
         }
 
         /// <summary>
@@ -159,7 +142,7 @@ namespace MongoDB.Bson
         /// </summary>
         public int Machine
         {
-            get { return _machine; }
+            get { return (_b >> 8) & 0xffffff; }
         }
 
         /// <summary>
@@ -167,7 +150,7 @@ namespace MongoDB.Bson
         /// </summary>
         public short Pid
         {
-            get { return _pid; }
+            get { return (short)(((_b << 8) & 0xff00) | ((_c >> 24) & 0x00ff)); }
         }
 
         /// <summary>
@@ -175,7 +158,7 @@ namespace MongoDB.Bson
         /// </summary>
         public int Increment
         {
-            get { return _increment; }
+            get { return _c & 0xffffff; }
         }
 
         /// <summary>
@@ -183,7 +166,7 @@ namespace MongoDB.Bson
         /// </summary>
         public DateTime CreationTime
         {
-            get { return BsonConstants.UnixEpoch.AddSeconds(_timestamp); }
+            get { return BsonConstants.UnixEpoch.AddSeconds(Timestamp); }
         }
 
         // public operators
@@ -330,6 +313,7 @@ namespace MongoDB.Bson
             {
                 throw new ArgumentNullException("s");
             }
+
             ObjectId objectId;
             if (TryParse(s, out objectId))
             {
@@ -383,6 +367,7 @@ namespace MongoDB.Bson
             {
                 throw new ArgumentOutOfRangeException("bytes", "Byte array must be 12 bytes long.");
             }
+
             timestamp = (bytes[0] << 24) + (bytes[1] << 16) + (bytes[2] << 8) + bytes[3];
             machine = (bytes[4] << 16) + (bytes[5] << 8) + bytes[6];
             pid = (short)((bytes[7] << 8) + bytes[8]);
@@ -390,6 +375,15 @@ namespace MongoDB.Bson
         }
 
         // private static methods
+        private static int GetAppDomainId()
+        {
+#if NETSTANDARD1_5 || NETSTANDARD1_6
+            return 1;
+#else
+            return AppDomain.CurrentDomain.Id;
+#endif
+        }
+
         /// <summary>
         /// Gets the current process id.  This method exists because of how CAS operates on the call stack, checking
         /// for permissions before executing the method.  Hence, if we inlined this call, the calling method would not execute
@@ -403,8 +397,26 @@ namespace MongoDB.Bson
 
         private static int GetMachineHash()
         {
-            var hostName = Environment.MachineName; // use instead of Dns.HostName so it will work offline
-            return 0x00ffffff & hostName.GetHashCode(); // use first 3 bytes of hash
+            // use instead of Dns.HostName so it will work offline
+            var machineName = GetMachineName();
+            return 0x00ffffff & machineName.GetHashCode(); // use first 3 bytes of hash
+        }
+
+        private static string GetMachineName()
+        {
+            return Environment.MachineName;
+        }
+
+        private static short GetPid()
+        {
+            try
+            {
+                return (short)GetCurrentProcessId(); // use low order two bytes only
+            }
+            catch (SecurityException)
+            {
+                return 0;
+            }
         }
 
         private static int GetTimestampFromDateTime(DateTime timestamp)
@@ -417,6 +429,13 @@ namespace MongoDB.Bson
             return (int)secondsSinceEpoch;
         }
 
+        private static void FromByteArray(byte[] bytes, int offset, out int a, out int b, out int c)
+        {
+            a = (bytes[offset] << 24) | (bytes[offset + 1] << 16) | (bytes[offset + 2] << 8) | bytes[offset + 3];
+            b = (bytes[offset + 4] << 24) | (bytes[offset + 5] << 16) | (bytes[offset + 6] << 8) | bytes[offset + 7];
+            c = (bytes[offset + 8] << 24) | (bytes[offset + 9] << 16) | (bytes[offset + 10] << 8) | bytes[offset + 11];
+        }
+
         // public methods
         /// <summary>
         /// Compares this ObjectId to another ObjectId.
@@ -425,13 +444,11 @@ namespace MongoDB.Bson
         /// <returns>A 32-bit signed integer that indicates whether this ObjectId is less than, equal to, or greather than the other.</returns>
         public int CompareTo(ObjectId other)
         {
-            int r = _timestamp.CompareTo(other._timestamp);
-            if (r != 0) { return r; }
-            r = _machine.CompareTo(other._machine);
-            if (r != 0) { return r; }
-            r = _pid.CompareTo(other._pid);
-            if (r != 0) { return r; }
-            return _increment.CompareTo(other._increment);
+            int result = ((uint)_a).CompareTo((uint)other._a);
+            if (result != 0) { return result; }
+            result = ((uint)_b).CompareTo((uint)other._b);
+            if (result != 0) { return result; }
+            return ((uint)_c).CompareTo((uint)other._c);
         }
 
         /// <summary>
@@ -442,10 +459,9 @@ namespace MongoDB.Bson
         public bool Equals(ObjectId rhs)
         {
             return
-                _timestamp == rhs._timestamp &&
-                _machine == rhs._machine &&
-                _pid == rhs._pid &&
-                _increment == rhs._increment;
+                _a == rhs._a &&
+                _b == rhs._b &&
+                _c == rhs._c;
         }
 
         /// <summary>
@@ -472,10 +488,9 @@ namespace MongoDB.Bson
         public override int GetHashCode()
         {
             int hash = 17;
-            hash = 37 * hash + _timestamp.GetHashCode();
-            hash = 37 * hash + _machine.GetHashCode();
-            hash = 37 * hash + _pid.GetHashCode();
-            hash = 37 * hash + _increment.GetHashCode();
+            hash = 37 * hash + _a.GetHashCode();
+            hash = 37 * hash + _b.GetHashCode();
+            hash = 37 * hash + _c.GetHashCode();
             return hash;
         }
 
@@ -485,7 +500,9 @@ namespace MongoDB.Bson
         /// <returns>A byte array.</returns>
         public byte[] ToByteArray()
         {
-            return Pack(_timestamp, _machine, _pid, _increment);
+            var bytes = new byte[12];
+            ToByteArray(bytes, 0);
+            return bytes;
         }
 
         /// <summary>
@@ -495,18 +512,27 @@ namespace MongoDB.Bson
         /// <param name="offset">The offset.</param>
         public void ToByteArray(byte[] destination, int offset)
         {
-            destination[offset + 0] = (byte)(_timestamp >> 24);
-            destination[offset + 1] = (byte)(_timestamp >> 16);
-            destination[offset + 2] = (byte)(_timestamp >> 8);
-            destination[offset + 3] = (byte)(_timestamp);
-            destination[offset + 4] = (byte)(_machine >> 16);
-            destination[offset + 5] = (byte)(_machine >> 8);
-            destination[offset + 6] = (byte)(_machine);
-            destination[offset + 7] = (byte)(_pid >> 8);
-            destination[offset + 8] = (byte)(_pid);
-            destination[offset + 9] = (byte)(_increment >> 16);
-            destination[offset + 10] = (byte)(_increment >> 8);
-            destination[offset + 11] = (byte)(_increment);
+            if (destination == null)
+            {
+                throw new ArgumentNullException("destination");
+            }
+            if (offset + 12 > destination.Length)
+            {
+                throw new ArgumentException("Not enough room in destination buffer.", "offset");
+            }
+
+            destination[offset + 0] = (byte)(_a >> 24);
+            destination[offset + 1] = (byte)(_a >> 16);
+            destination[offset + 2] = (byte)(_a >> 8);
+            destination[offset + 3] = (byte)(_a);
+            destination[offset + 4] = (byte)(_b >> 24);
+            destination[offset + 5] = (byte)(_b >> 16);
+            destination[offset + 6] = (byte)(_b >> 8);
+            destination[offset + 7] = (byte)(_b);
+            destination[offset + 8] = (byte)(_c >> 24);
+            destination[offset + 9] = (byte)(_c >> 16);
+            destination[offset + 10] = (byte)(_c >> 8);
+            destination[offset + 11] = (byte)(_c);
         }
 
         /// <summary>
@@ -515,24 +541,32 @@ namespace MongoDB.Bson
         /// <returns>A string representation of the value.</returns>
         public override string ToString()
         {
-            return BsonUtils.ToHexString(Pack(_timestamp, _machine, _pid, _increment));
-        }
-
-        // internal methods
-        internal void GetBytes(byte[] bytes, int index)
-        {
-            bytes[index] = (byte)(_timestamp >> 24);
-            bytes[1 + index] = (byte)(_timestamp >> 16);
-            bytes[2 + index] = (byte)(_timestamp >> 8);
-            bytes[3 + index] = (byte)(_timestamp);
-            bytes[4 + index] = (byte)(_machine >> 16);
-            bytes[5 + index] = (byte)(_machine >> 8);
-            bytes[6 + index] = (byte)(_machine);
-            bytes[7 + index] = (byte)(_pid >> 8);
-            bytes[8 + index] = (byte)(_pid);
-            bytes[9 + index] = (byte)(_increment >> 16);
-            bytes[10 + index] = (byte)(_increment >> 8);
-            bytes[11 + index] = (byte)(_increment);
+            var c = new char[24];
+            c[0] = BsonUtils.ToHexChar((_a >> 28) & 0x0f);
+            c[1] = BsonUtils.ToHexChar((_a >> 24) & 0x0f);
+            c[2] = BsonUtils.ToHexChar((_a >> 20) & 0x0f);
+            c[3] = BsonUtils.ToHexChar((_a >> 16) & 0x0f);
+            c[4] = BsonUtils.ToHexChar((_a >> 12) & 0x0f);
+            c[5] = BsonUtils.ToHexChar((_a >> 8) & 0x0f);
+            c[6] = BsonUtils.ToHexChar((_a >> 4) & 0x0f);
+            c[7] = BsonUtils.ToHexChar(_a & 0x0f);
+            c[8] = BsonUtils.ToHexChar((_b >> 28) & 0x0f);
+            c[9] = BsonUtils.ToHexChar((_b >> 24) & 0x0f);
+            c[10] = BsonUtils.ToHexChar((_b >> 20) & 0x0f);
+            c[11] = BsonUtils.ToHexChar((_b >> 16) & 0x0f);
+            c[12] = BsonUtils.ToHexChar((_b >> 12) & 0x0f);
+            c[13] = BsonUtils.ToHexChar((_b >> 8) & 0x0f);
+            c[14] = BsonUtils.ToHexChar((_b >> 4) & 0x0f);
+            c[15] = BsonUtils.ToHexChar(_b & 0x0f);
+            c[16] = BsonUtils.ToHexChar((_c >> 28) & 0x0f);
+            c[17] = BsonUtils.ToHexChar((_c >> 24) & 0x0f);
+            c[18] = BsonUtils.ToHexChar((_c >> 20) & 0x0f);
+            c[19] = BsonUtils.ToHexChar((_c >> 16) & 0x0f);
+            c[20] = BsonUtils.ToHexChar((_c >> 12) & 0x0f);
+            c[21] = BsonUtils.ToHexChar((_c >> 8) & 0x0f);
+            c[22] = BsonUtils.ToHexChar((_c >> 4) & 0x0f);
+            c[23] = BsonUtils.ToHexChar(_c & 0x0f);
+            return new string(c);
         }
 
         // explicit IConvertible implementation

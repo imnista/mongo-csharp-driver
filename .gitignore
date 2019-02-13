@@ -8,6 +8,12 @@ obj
 *.vbproj.VisualState.xml
 *.cache
 TestResults
+.vs
+project.lock.json
+.vscode
+
+# JetBrains Rider artifacts
+.idea
 
 # CodeReview
 codereview.rc
@@ -50,7 +56,13 @@ src/packages
 *.cs.orig
 *.vb.orig
 
+# Fake Artifacts
+.fake
+
+# Cake Artifacts
+.dotnet
+
 # Other
 artifacts
 packages
-Tools/FAKE
+/Tools

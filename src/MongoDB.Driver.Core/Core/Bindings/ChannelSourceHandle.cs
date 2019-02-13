@@ -1,4 +1,4 @@
-﻿/* Copyright 2013-2014 MongoDB Inc.
+/* Copyright 2013-present MongoDB Inc.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -48,12 +48,31 @@ namespace MongoDB.Driver.Core.Bindings
 
         // properties
         /// <inheritdoc/>
+        public IServer Server
+        {
+            get { return _reference.Instance.Server; }
+        }
+
+        /// <inheritdoc/>
         public ServerDescription ServerDescription
         {
             get { return _reference.Instance.ServerDescription; }
         }
 
+        /// <inheritdoc/>
+        public ICoreSessionHandle Session
+        {
+            get { return _reference.Instance.Session; }
+        }
+
         // methods
+        /// <inheritdoc/>
+        public IChannelHandle GetChannel(CancellationToken cancellationToken)
+        {
+            ThrowIfDisposed();
+            return _reference.Instance.GetChannel(cancellationToken);
+        }
+
         /// <inheritdoc/>
         public Task<IChannelHandle> GetChannelAsync(CancellationToken cancellationToken)
         {

@@ -1,4 +1,4 @@
-﻿/* Copyright 2013-2014 MongoDB Inc.
+/* Copyright 2013-present MongoDB Inc.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -24,6 +24,7 @@ using MongoDB.Bson.IO;
 using MongoDB.Bson.Serialization;
 using MongoDB.Bson.Serialization.Serializers;
 using MongoDB.Driver.Core.Bindings;
+using MongoDB.Driver.Core.Connections;
 using MongoDB.Driver.Core.Misc;
 using MongoDB.Driver.Core.WireProtocol.Messages.Encoders;
 
@@ -33,12 +34,15 @@ namespace MongoDB.Driver.Core.Operations
     /// Represents a base class for find and modify operations.
     /// </summary>
     /// <typeparam name="TResult">The type of the result.</typeparam>
-    public abstract class FindAndModifyOperationBase<TResult> : IWriteOperation<TResult>
+    public abstract class FindAndModifyOperationBase<TResult> : IWriteOperation<TResult>, IRetryableWriteOperation<TResult>
     {
         // fields
+        private Collation _collation;
         private readonly CollectionNamespace _collectionNamespace;
         private readonly MessageEncoderSettings _messageEncoderSettings;
         private readonly IBsonSerializer<TResult> _resultSerializer;
+        private WriteConcern _writeConcern;
+        private bool _retryRequested;
 
         // constructors
         /// <summary>
@@ -49,12 +53,24 @@ namespace MongoDB.Driver.Core.Operations
         /// <param name="messageEncoderSettings">The message encoder settings.</param>
         public FindAndModifyOperationBase(CollectionNamespace collectionNamespace, IBsonSerializer<TResult> resultSerializer, MessageEncoderSettings messageEncoderSettings)
         {
-            _collectionNamespace = Ensure.IsNotNull(collectionNamespace, "collectionNamespace");
-            _resultSerializer = Ensure.IsNotNull(resultSerializer, "resultSerializer");
-            _messageEncoderSettings = Ensure.IsNotNull(messageEncoderSettings, "messageEncoderSettings");
+            _collectionNamespace = Ensure.IsNotNull(collectionNamespace, nameof(collectionNamespace));
+            _resultSerializer = Ensure.IsNotNull(resultSerializer, nameof(resultSerializer));
+            _messageEncoderSettings = Ensure.IsNotNull(messageEncoderSettings, nameof(messageEncoderSettings));
         }
 
         // properties
+        /// <summary>
+        /// Gets or sets the collation.
+        /// </summary>
+        /// <value>
+        /// The collation.
+        /// </value>
+        public Collation Collation
+        {
+            get { return _collation; }
+            set { _collation = value; }
+        }
+
         /// <summary>
         /// Gets the collection namespace.
         /// </summary>
@@ -88,19 +104,93 @@ namespace MongoDB.Driver.Core.Operations
             get { return _resultSerializer; }
         }
 
-        // methods
-        internal abstract BsonDocument CreateCommand();
+        /// <summary>
+        /// Gets or sets the write concern.
+        /// </summary>
+        public WriteConcern WriteConcern
+        {
+            get { return _writeConcern; }
+            set { _writeConcern = value; }
+        }
+
+        /// <summary>
+        /// Gets or sets whether the operation can be retried.
+        /// </summary>
+        public bool RetryRequested
+        {
+            get { return _retryRequested; }
+            set { _retryRequested = value; }
+        }
+
+        // public methods
+        /// <inheritdoc/>
+        public TResult Execute(IWriteBinding binding, CancellationToken cancellationToken)
+        {
+            return RetryableWriteOperationExecutor.Execute(this, binding, _retryRequested, cancellationToken);
+        }
+
+        /// <inheritdoc/>
+        public TResult Execute(RetryableWriteContext context, CancellationToken cancellationToken)
+        {
+            return RetryableWriteOperationExecutor.Execute(this, context, cancellationToken);
+        }
 
         /// <inheritdoc/>
         public Task<TResult> ExecuteAsync(IWriteBinding binding, CancellationToken cancellationToken)
         {
-            Ensure.IsNotNull(binding, "binding");
-            var command = CreateCommand();
-            var operation = new WriteCommandOperation<TResult>(_collectionNamespace.DatabaseNamespace, command, _resultSerializer, _messageEncoderSettings)
+            return RetryableWriteOperationExecutor.ExecuteAsync(this, binding, _retryRequested, cancellationToken);
+        }
+
+        /// <inheritdoc/>
+        public Task<TResult> ExecuteAsync(RetryableWriteContext context, CancellationToken cancellationToken)
+        {
+            return RetryableWriteOperationExecutor.ExecuteAsync(this, context, cancellationToken);
+        }
+
+        /// <inheritdoc/>
+        public TResult ExecuteAttempt(RetryableWriteContext context, int attempt, long? transactionNumber, CancellationToken cancellationToken)
+        {
+            var binding = context.Binding;
+            var channelSource = context.ChannelSource;
+            var channel = context.Channel;
+
+            using (var channelBinding = new ChannelReadWriteBinding(channelSource.Server, channel, binding.Session.Fork()))
+            {
+                var operation = CreateOperation(channelBinding.Session, channel.ConnectionDescription, transactionNumber);
+                using (var rawBsonDocument = operation.Execute(channelBinding, cancellationToken))
+                {
+                    return ProcessCommandResult(channel.ConnectionDescription.ConnectionId, rawBsonDocument);
+                }
+            }
+        }
+
+        /// <inheritdoc/>
+        public async Task<TResult> ExecuteAttemptAsync(RetryableWriteContext context, int attempt, long? transactionNumber, CancellationToken cancellationToken)
+        {
+            var binding = context.Binding;
+            var channelSource = context.ChannelSource;
+            var channel = context.Channel;
+
+            using (var channelBinding = new ChannelReadWriteBinding(channelSource.Server, channel, binding.Session.Fork()))
+            {
+                var operation = CreateOperation(channelBinding.Session, channel.ConnectionDescription, transactionNumber);
+                using (var rawBsonDocument = await operation.ExecuteAsync(channelBinding, cancellationToken).ConfigureAwait(false))
+                {
+                    return ProcessCommandResult(channel.ConnectionDescription.ConnectionId, rawBsonDocument);
+                }
+            }
+        }
+
+        // private methods
+        internal abstract BsonDocument CreateCommand(ICoreSessionHandle session, ConnectionDescription connectionDescription, long? transactionNumber);
+
+        private WriteCommandOperation<RawBsonDocument> CreateOperation(ICoreSessionHandle session, ConnectionDescription connectionDescription, long? transactionNumber)
+        {
+            var command = CreateCommand(session, connectionDescription, transactionNumber);
+            return new WriteCommandOperation<RawBsonDocument>(_collectionNamespace.DatabaseNamespace, command, RawBsonDocumentSerializer.Instance, _messageEncoderSettings)
             {
                 CommandValidator = GetCommandValidator()
             };
-            return operation.ExecuteAsync(binding, cancellationToken);
         }
 
         /// <summary>
@@ -108,5 +198,22 @@ namespace MongoDB.Driver.Core.Operations
         /// </summary>
         /// <returns>An element name validator for the command.</returns>
         protected abstract IElementNameValidator GetCommandValidator();
+
+        [System.Diagnostics.CodeAnalysis.SuppressMessage("Microsoft.Usage", "CA2202:Do not dispose objects multiple times")]
+        private TResult ProcessCommandResult(ConnectionId connectionId, RawBsonDocument rawBsonDocument)
+        {
+            var binaryReaderSettings = new BsonBinaryReaderSettings
+            {
+                Encoding = _messageEncoderSettings.GetOrDefault<UTF8Encoding>(MessageEncoderSettingsName.ReadEncoding, Utf8Encodings.Strict),
+                GuidRepresentation = _messageEncoderSettings.GetOrDefault<GuidRepresentation>(MessageEncoderSettingsName.GuidRepresentation, GuidRepresentation.CSharpLegacy)
+            };
+
+            using (var stream = new ByteBufferStream(rawBsonDocument.Slice, ownsBuffer: false))
+            using (var reader = new BsonBinaryReader(stream, binaryReaderSettings))
+            {
+                var context = BsonDeserializationContext.CreateRoot(reader);
+                return _resultSerializer.Deserialize(context);
+            }
+        }
     }
 }

@@ -1,4 +1,4 @@
-﻿/* Copyright 2013-2014 MongoDB Inc.
+/* Copyright 2013-present MongoDB Inc.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -17,9 +17,6 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Net;
-using System.Net.Sockets;
-using System.Text;
-using System.Threading.Tasks;
 using MongoDB.Bson;
 using MongoDB.Driver.Core.Clusters;
 using MongoDB.Driver.Core.Misc;
@@ -42,10 +39,38 @@ namespace MongoDB.Driver.Core.Connections
         /// <param name="wrapped">The wrapped result document.</param>
         public IsMasterResult(BsonDocument wrapped)
         {
-            _wrapped = Ensure.IsNotNull(wrapped, "wrapped");
+            _wrapped = Ensure.IsNotNull(wrapped, nameof(wrapped));
         }
 
         // properties
+        /// <summary>
+        /// Gets the election identifier.
+        /// </summary>
+        public ElectionId ElectionId
+        {
+            get
+            {
+                BsonValue value;
+                if (_wrapped.TryGetValue("electionId", out value))
+                {
+                    return new ElectionId((ObjectId)value);
+                }
+
+                return null;
+            }
+        }
+        
+        /// <summary>
+        /// Get whether SaslSupportedMechs was part of the isMaster response.
+        /// </summary>
+        /// <value>
+        /// Whether SaslSupportedMechs was part of the isMaster response.
+        /// </value>
+        public bool HasSaslSupportedMechs
+        {
+            get { return _wrapped.Contains("saslSupportedMechs"); }   
+        }
+
         /// <summary>
         /// Gets a value indicating whether this instance is an arbiter.
         /// </summary>
@@ -66,6 +91,53 @@ namespace MongoDB.Driver.Core.Connections
         public bool IsReplicaSetMember
         {
             get { return ServerType.IsReplicaSetMember(); }
+        }
+
+        /// <summary>
+        /// Gets the last write timestamp.
+        /// </summary>
+        /// <value>
+        /// The last write timestamp.
+        /// </value>
+        public DateTime? LastWriteTimestamp
+        {
+            get
+            {
+                BsonValue value;
+                if (_wrapped.TryGetValue("lastWrite", out value))
+                {
+                    return value["lastWriteDate"].ToUniversalTime();
+                }
+
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// Gets the logical session timeout.
+        /// </summary>
+        /// <value>
+        /// The logical session timeout.
+        /// </value>
+        public TimeSpan? LogicalSessionTimeout
+        {
+            get
+            {
+                BsonValue value;
+                if (_wrapped.TryGetValue("logicalSessionTimeoutMinutes", out value))
+                {
+                    if (value.BsonType == BsonType.Null)
+                    {
+                        return null;
+                    }
+                    else
+                    {
+                        return TimeSpan.FromMinutes(value.ToDouble());
+                    }
+                }
+
+                return null;
+            }
         }
 
         /// <summary>
@@ -129,6 +201,35 @@ namespace MongoDB.Driver.Core.Connections
         }
 
         /// <summary>
+        /// Gets the endpoint the server is claiming it is known as.
+        /// </summary>
+        public EndPoint Me
+        {
+            get
+            {
+                BsonValue value;
+                if (_wrapped.TryGetValue("me", out value))
+                {
+                    return EndPointHelper.Parse((string)value);
+                }
+
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// Get the SaslSupportedMechs.
+        /// </summary>
+        /// <value>
+        /// The SaslSupportedMechs. Empty if saslSupportedMechs was an empty list or if saslSupportedMechs was not
+        /// included in the isMaster response.
+        /// </value>
+        public IEnumerable<string> SaslSupportedMechs
+        {
+            get { return _wrapped.GetValue("saslSupportedMechs", new BsonArray()).AsBsonArray.Select(s => s.ToString()); }
+        }
+
+        /// <summary>
         /// Gets the type of the server.
         /// </summary>
         /// <value>
@@ -154,13 +255,13 @@ namespace MongoDB.Driver.Core.Connections
                     {
                         return ServerType.ReplicaSetPrimary;
                     }
+                    if (_wrapped.GetValue("hidden", false).ToBoolean())
+                    {
+                        return ServerType.ReplicaSetOther;
+                    }
                     if (_wrapped.GetValue("secondary", false).ToBoolean())
                     {
                         return ServerType.ReplicaSetSecondary;
-                    }
-                    if (_wrapped.GetValue("passive", false).ToBoolean() || _wrapped.GetValue("hidden", false).ToBoolean())
-                    {
-                        return ServerType.ReplicaSetPassive;
                     }
                     if (_wrapped.GetValue("arbiterOnly", false).ToBoolean())
                     {
@@ -300,7 +401,7 @@ namespace MongoDB.Driver.Core.Connections
             var members = GetMembers();
             var name = (string)_wrapped.GetValue("setName", null);
             var primary = GetPrimary();
-            var version = _wrapped.Contains("version") ? (int?)_wrapped["version"].ToInt32() : null;
+            var version = _wrapped.Contains("setVersion") ? (int?)_wrapped["setVersion"].ToInt32() : null;
 
             return new ReplicaSetConfig(members, name, primary, version);
         }

@@ -1,4 +1,4 @@
-﻿/* Copyright 2013-2014 MongoDB Inc.
+/* Copyright 2013-present MongoDB Inc.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -56,9 +56,9 @@ namespace MongoDB.Driver.Core.Operations
             IBsonSerializer<TCommandResult> resultSerializer,
             MessageEncoderSettings messageEncoderSettings)
         {
-            _databaseNamespace = Ensure.IsNotNull(databaseNamespace, "databaseNamespace");
-            _command = Ensure.IsNotNull(command, "command");
-            _resultSerializer = Ensure.IsNotNull(resultSerializer, "resultSerializer");
+            _databaseNamespace = Ensure.IsNotNull(databaseNamespace, nameof(databaseNamespace));
+            _command = Ensure.IsNotNull(command, nameof(command));
+            _resultSerializer = Ensure.IsNotNull(resultSerializer, nameof(resultSerializer));
             _messageEncoderSettings = messageEncoderSettings;
         }
 
@@ -95,7 +95,7 @@ namespace MongoDB.Driver.Core.Operations
         public IElementNameValidator CommandValidator
         {
             get { return _commandValidator; }
-            set { _commandValidator = Ensure.IsNotNull(value, "value"); }
+            set { _commandValidator = Ensure.IsNotNull(value, nameof(value)); }
         }
 
         /// <summary>
@@ -144,45 +144,20 @@ namespace MongoDB.Driver.Core.Operations
         }
 
         // methods
-        private BsonDocument CreateWrappedCommand(ServerDescription serverDescription, ReadPreference readPreference)
+        private TCommandResult ExecuteProtocol(IChannelHandle channel, ICoreSessionHandle session, ReadPreference readPreference, CancellationToken cancellationToken)
         {
-            BsonDocument readPreferenceDocument = null;
-            if (serverDescription.Type == ServerType.ShardRouter)
-            {
-                readPreferenceDocument = QueryHelper.CreateReadPreferenceDocument(serverDescription.Type, readPreference);
-            }
+            var additionalOptions = GetEffectiveAdditionalOptions();
 
-            var wrappedCommand = new BsonDocument
-            {
-                { "$query", _command },
-                { "$readPreference", readPreferenceDocument, readPreferenceDocument != null },
-                { "$comment", () => _comment, _comment != null }
-            };
-            if (_additionalOptions != null)
-            {
-                wrappedCommand.Merge(_additionalOptions, overwriteExistingElements: false);
-            }
-
-            if (wrappedCommand.ElementCount == 1)
-            {
-                return _command;
-            }
-            else
-            {
-                return wrappedCommand;
-            }
-        }
-
-        private Task<TCommandResult> ExecuteProtocolAsync(IChannelHandle channel, ServerDescription serverDescription, ReadPreference readPreference, CancellationToken cancellationToken)
-        {
-            var wrappedCommand = CreateWrappedCommand(serverDescription, readPreference);
-            var slaveOk = readPreference != null && readPreference.ReadPreferenceMode != ReadPreferenceMode.Primary;
-
-            return channel.CommandAsync<TCommandResult>(
+            return channel.Command(
+                session,
+                readPreference,
                 _databaseNamespace,
-                wrappedCommand,
+                _command,
+                null, // commandPayloads
                 _commandValidator,
-                slaveOk,
+                additionalOptions,
+                null, // postWriteAction,
+                CommandResponseHandling.Return,
                 _resultSerializer,
                 _messageEncoderSettings,
                 cancellationToken);
@@ -192,17 +167,85 @@ namespace MongoDB.Driver.Core.Operations
         /// Executes the protocol.
         /// </summary>
         /// <param name="channelSource">The channel source.</param>
+        /// <param name="session">The session.</param>
         /// <param name="readPreference">The read preference.</param>
         /// <param name="cancellationToken">The cancellation token.</param>
-        /// <returns>A Task whose result is the command result.</returns>
+        /// <returns>
+        /// A Task whose result is the command result.
+        /// </returns>
+        protected TCommandResult ExecuteProtocol(
+            IChannelSource channelSource,
+            ICoreSessionHandle session,
+            ReadPreference readPreference,
+            CancellationToken cancellationToken)
+        {
+            using (var channel = channelSource.GetChannel(cancellationToken))
+            {
+                return ExecuteProtocol(channel, session, readPreference, cancellationToken);
+            }
+        }
+
+        private Task<TCommandResult> ExecuteProtocolAsync(IChannelHandle channel, ICoreSessionHandle session, ReadPreference readPreference, CancellationToken cancellationToken)
+        {
+            var additionalOptions = GetEffectiveAdditionalOptions();
+
+            return channel.CommandAsync(
+                session,
+                readPreference,
+                _databaseNamespace,
+                _command,
+                null, // TODO: support commandPayloads
+                _commandValidator,
+                additionalOptions,
+                null, // postWriteAction,
+                CommandResponseHandling.Return,
+                _resultSerializer,
+                _messageEncoderSettings,
+                cancellationToken);
+        }
+
+        /// <summary>
+        /// Executes the protocol.
+        /// </summary>
+        /// <param name="channelSource">The channel source.</param>
+        /// <param name="session">The session.</param>
+        /// <param name="readPreference">The read preference.</param>
+        /// <param name="cancellationToken">The cancellation token.</param>
+        /// <returns>
+        /// A Task whose result is the command result.
+        /// </returns>
         protected async Task<TCommandResult> ExecuteProtocolAsync(
             IChannelSource channelSource,
+            ICoreSessionHandle session,
             ReadPreference readPreference,
             CancellationToken cancellationToken)
         {
             using (var channel = await channelSource.GetChannelAsync(cancellationToken).ConfigureAwait(false))
             {
-                return await ExecuteProtocolAsync(channel, channelSource.ServerDescription, readPreference, cancellationToken).ConfigureAwait(false);
+                return await ExecuteProtocolAsync(channel, session, readPreference, cancellationToken).ConfigureAwait(false);
+            }
+        }
+
+        // private methods
+        private BsonDocument GetEffectiveAdditionalOptions()
+        {
+            if (_additionalOptions == null && _comment == null)
+            {
+                return null;
+            }
+            else if (_additionalOptions != null && _comment == null)
+            {
+                return _additionalOptions;
+            }
+            else if (_additionalOptions == null && _comment != null)
+            {
+                return new BsonDocument("$comment", _comment);
+            }
+            else
+            {
+                var additionalOptions = new BsonDocument("$comment", _comment);
+                additionalOptions.Merge(_additionalOptions, overwriteExistingElements: false);
+                return additionalOptions;
             }
         }
     }

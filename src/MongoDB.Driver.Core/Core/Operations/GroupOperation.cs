@@ -1,4 +1,4 @@
-﻿/* Copyright 2013-2014 MongoDB Inc.
+/* Copyright 2013-present MongoDB Inc.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -15,7 +15,6 @@
 
 using System;
 using System.Collections.Generic;
-using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using MongoDB.Bson;
@@ -24,6 +23,7 @@ using MongoDB.Bson.Serialization.Serializers;
 using MongoDB.Driver.Core.Bindings;
 using MongoDB.Driver.Core.Misc;
 using MongoDB.Driver.Core.WireProtocol.Messages.Encoders;
+using MongoDB.Shared;
 
 namespace MongoDB.Driver.Core.Operations
 {
@@ -34,6 +34,7 @@ namespace MongoDB.Driver.Core.Operations
     public class GroupOperation<TResult> : IReadOperation<IEnumerable<TResult>>
     {
         // fields
+        private Collation _collation;
         private readonly CollectionNamespace _collectionNamespace;
         private readonly BsonDocument _filter;
         private BsonJavaScript _finalizeFunction;
@@ -57,11 +58,11 @@ namespace MongoDB.Driver.Core.Operations
         /// <param name="messageEncoderSettings">The message encoder settings.</param>
         public GroupOperation(CollectionNamespace collectionNamespace, BsonDocument key, BsonDocument initial, BsonJavaScript reduceFunction, BsonDocument filter, MessageEncoderSettings messageEncoderSettings)
         {
-            _collectionNamespace = Ensure.IsNotNull(collectionNamespace, "collectionNamespace");
-            _key = Ensure.IsNotNull(key, "key");
-            _initial = Ensure.IsNotNull(initial, "initial");
-            _reduceFunction = Ensure.IsNotNull(reduceFunction, "reduceFunction");
-            _filter = filter;
+            _collectionNamespace = Ensure.IsNotNull(collectionNamespace, nameof(collectionNamespace));
+            _key = Ensure.IsNotNull(key, nameof(key));
+            _initial = Ensure.IsNotNull(initial, nameof(initial));
+            _reduceFunction = Ensure.IsNotNull(reduceFunction, nameof(reduceFunction));
+            _filter = filter; // can be null
             _messageEncoderSettings = messageEncoderSettings;
         }
 
@@ -76,15 +77,27 @@ namespace MongoDB.Driver.Core.Operations
         /// <param name="messageEncoderSettings">The message encoder settings.</param>
         public GroupOperation(CollectionNamespace collectionNamespace, BsonJavaScript keyFunction, BsonDocument initial, BsonJavaScript reduceFunction, BsonDocument filter, MessageEncoderSettings messageEncoderSettings)
         {
-            _collectionNamespace = Ensure.IsNotNull(collectionNamespace, "collectionNamespace");
-            _keyFunction = Ensure.IsNotNull(keyFunction, "keyFunction");
-            _initial = Ensure.IsNotNull(initial, "initial");
-            _reduceFunction = Ensure.IsNotNull(reduceFunction, "reduceFunction");
+            _collectionNamespace = Ensure.IsNotNull(collectionNamespace, nameof(collectionNamespace));
+            _keyFunction = Ensure.IsNotNull(keyFunction, nameof(keyFunction));
+            _initial = Ensure.IsNotNull(initial, nameof(initial));
+            _reduceFunction = Ensure.IsNotNull(reduceFunction, nameof(reduceFunction));
             _filter = filter;
             _messageEncoderSettings = messageEncoderSettings;
         }
 
         // properties
+        /// <summary>
+        /// Gets or sets the collation.
+        /// </summary>
+        /// <value>
+        /// The collation.
+        /// </value>
+        public Collation Collation
+        {
+            get { return _collation; }
+            set { _collation = value; }
+        }
+
         /// <summary>
         /// Gets the collection namespace.
         /// </summary>
@@ -161,7 +174,7 @@ namespace MongoDB.Driver.Core.Operations
         public TimeSpan? MaxTime
         {
             get { return _maxTime; }
-            set { _maxTime = value; }
+            set { _maxTime = Ensure.IsNullOrInfiniteOrGreaterThanOrEqualToZero(value, nameof(value)); }
         }
 
         /// <summary>
@@ -198,9 +211,38 @@ namespace MongoDB.Driver.Core.Operations
             set { _resultSerializer = value; }
         }
 
-        // methods
-        internal BsonDocument CreateCommand()
+        // public methods
+        /// <inheritdoc/>
+        public IEnumerable<TResult> Execute(IReadBinding binding, CancellationToken cancellationToken)
         {
+            Ensure.IsNotNull(binding, nameof(binding));
+            using (var channelSource = binding.GetReadChannelSource(cancellationToken))
+            using (var channel = channelSource.GetChannel(cancellationToken))
+            using (var channelBinding = new ChannelReadBinding(channelSource.Server, channel, binding.ReadPreference, binding.Session.Fork()))
+            {
+                var operation = CreateOperation(channel.ConnectionDescription.ServerVersion);
+                return operation.Execute(channelBinding, cancellationToken);
+            }
+        }
+
+        /// <inheritdoc/>
+        public async Task<IEnumerable<TResult>> ExecuteAsync(IReadBinding binding, CancellationToken cancellationToken)
+        {
+            Ensure.IsNotNull(binding, nameof(binding));
+            using (var channelSource = await binding.GetReadChannelSourceAsync(cancellationToken).ConfigureAwait(false))
+            using (var channel = await channelSource.GetChannelAsync(cancellationToken).ConfigureAwait(false))
+            using (var channelBinding = new ChannelReadBinding(channelSource.Server, channel, binding.ReadPreference, binding.Session.Fork()))
+            {
+                var operation = CreateOperation(channel.ConnectionDescription.ServerVersion);
+                return await operation.ExecuteAsync(channelBinding, cancellationToken).ConfigureAwait(false);
+            }
+        }
+
+        // private methods
+        internal BsonDocument CreateCommand(SemanticVersion serverVersion)
+        {
+            Feature.Collation.ThrowIfNotSupported(serverVersion, _collation);
+
             return new BsonDocument
             {
                 { "group", new BsonDocument
@@ -211,23 +253,21 @@ namespace MongoDB.Driver.Core.Operations
                         { "$reduce", _reduceFunction },
                         { "initial", _initial },
                         { "cond", _filter, _filter != null },
-                        { "finalize", _finalizeFunction, _finalizeFunction != null }
+                        { "finalize", _finalizeFunction, _finalizeFunction != null },
+                        { "collation", () => _collation.ToBsonDocument(), _collation != null }
                     }
                 },
-                { "maxTimeMS", () => _maxTime.Value.TotalMilliseconds, _maxTime.HasValue }
+                { "maxTimeMS", () => MaxTimeHelper.ToMaxTimeMS(_maxTime.Value), _maxTime.HasValue }
            };
         }
 
-        /// <inheritdoc/>
-        public async Task<IEnumerable<TResult>> ExecuteAsync(IReadBinding binding, CancellationToken cancellationToken)
+        private ReadCommandOperation<TResult[]> CreateOperation(SemanticVersion serverVersion)
         {
-            Ensure.IsNotNull(binding, "binding");
-            var command = CreateCommand();
+            var command = CreateCommand(serverVersion);
             var resultSerializer = _resultSerializer ?? BsonSerializer.LookupSerializer<TResult>();
             var resultArraySerializer = new ArraySerializer<TResult>(resultSerializer);
             var commandResultSerializer = new ElementDeserializer<TResult[]>("retval", resultArraySerializer);
-            var operation = new ReadCommandOperation<TResult[]>(_collectionNamespace.DatabaseNamespace, command, commandResultSerializer, _messageEncoderSettings);
-            return await operation.ExecuteAsync(binding, cancellationToken).ConfigureAwait(false);
+            return new ReadCommandOperation<TResult[]>(_collectionNamespace.DatabaseNamespace, command, commandResultSerializer, _messageEncoderSettings);
         }
     }
 }

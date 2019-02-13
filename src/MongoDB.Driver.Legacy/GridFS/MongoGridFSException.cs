@@ -1,4 +1,4 @@
-﻿/* Copyright 2010-2014 MongoDB Inc.
+/* Copyright 2010-present MongoDB Inc.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -14,7 +14,9 @@
 */
 
 using System;
+#if NET452
 using System.Runtime.Serialization;
+#endif
 using MongoDB.Driver.Core.Connections;
 
 namespace MongoDB.Driver.GridFS
@@ -22,7 +24,9 @@ namespace MongoDB.Driver.GridFS
     /// <summary>
     /// Represents a MongoDB GridFS exception.
     /// </summary>
+#if NET452
     [Serializable]
+#endif
     public class MongoGridFSException : MongoServerException
     {
         // constructors
@@ -47,6 +51,7 @@ namespace MongoDB.Driver.GridFS
         {
         }
 
+#if NET452
         /// <summary>
         /// Initializes a new instance of the MongoGridFSException class (this overload supports deserialization).
         /// </summary>
@@ -56,5 +61,6 @@ namespace MongoDB.Driver.GridFS
             : base(info, context)
         {
         }
+#endif
     }
 }

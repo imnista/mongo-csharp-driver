@@ -1,4 +1,4 @@
-﻿/* Copyright 2013-2014 MongoDB Inc.
+/* Copyright 2013-present MongoDB Inc.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -15,7 +15,9 @@
 
 using System;
 using System.Net;
+#if NET452
 using System.Runtime.Serialization;
+#endif
 using MongoDB.Driver.Core.Clusters;
 using MongoDB.Driver.Core.Misc;
 
@@ -24,7 +26,9 @@ namespace MongoDB.Driver
     /// <summary>
     /// Represents a MongoDB connection pool wait queue full exception.
     /// </summary>
+#if NET452
     [Serializable]
+#endif
     public class MongoWaitQueueFullException : MongoClientException
     {
         #region static
@@ -54,6 +58,7 @@ namespace MongoDB.Driver
         {
         }
 
+#if NET452
         /// <summary>
         /// Initializes a new instance of the <see cref="MongoWaitQueueFullException"/> class.
         /// </summary>
@@ -63,5 +68,6 @@ namespace MongoDB.Driver
             : base(info, context)
         {
         }
+#endif
     }
 }

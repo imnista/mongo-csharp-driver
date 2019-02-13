@@ -1,4 +1,4 @@
-﻿/* Copyright 2013-2014 MongoDB Inc.
+/* Copyright 2013-present MongoDB Inc.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -18,8 +18,11 @@ using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using MongoDB.Bson;
+using MongoDB.Driver.Core.Bindings;
+using MongoDB.Driver.Core.Connections;
 using MongoDB.Driver.Core.Misc;
 using MongoDB.Driver.Core.WireProtocol.Messages.Encoders;
+using MongoDB.Shared;
 
 namespace MongoDB.Driver.Core.Operations
 {
@@ -29,6 +32,7 @@ namespace MongoDB.Driver.Core.Operations
     public abstract class MapReduceOperationBase
     {
         // fields
+        private Collation _collation;
         private readonly CollectionNamespace _collectionNamespace;
         private BsonDocument _filter;
         private BsonJavaScript _finalizeFunction;
@@ -52,13 +56,25 @@ namespace MongoDB.Driver.Core.Operations
         /// <param name="messageEncoderSettings">The message encoder settings.</param>
         protected MapReduceOperationBase(CollectionNamespace collectionNamespace, BsonJavaScript mapFunction, BsonJavaScript reduceFunction, MessageEncoderSettings messageEncoderSettings)
         {
-            _collectionNamespace = Ensure.IsNotNull(collectionNamespace, "collectionNamespace");
-            _mapFunction = Ensure.IsNotNull(mapFunction, "mapFunction");
-            _reduceFunction = Ensure.IsNotNull(reduceFunction, "reduceFunction");
-            _messageEncoderSettings = Ensure.IsNotNull(messageEncoderSettings, "messageEncoderSettings");
+            _collectionNamespace = Ensure.IsNotNull(collectionNamespace, nameof(collectionNamespace));
+            _mapFunction = Ensure.IsNotNull(mapFunction, nameof(mapFunction));
+            _reduceFunction = Ensure.IsNotNull(reduceFunction, nameof(reduceFunction));
+            _messageEncoderSettings = Ensure.IsNotNull(messageEncoderSettings, nameof(messageEncoderSettings));
         }
 
         // properties
+        /// <summary>
+        /// Gets or sets the collation.
+        /// </summary>
+        /// <value>
+        /// The collation.
+        /// </value>
+        public Collation Collation
+        {
+            get { return _collation; }
+            set { _collation = value; }
+        }
+
         /// <summary>
         /// Gets the collection namespace.
         /// </summary>
@@ -142,7 +158,7 @@ namespace MongoDB.Driver.Core.Operations
         public TimeSpan? MaxTime
         {
             get { return _maxTime; }
-            set { _maxTime = Ensure.IsNullOrGreaterThanZero(value, "value"); }
+            set { _maxTime = Ensure.IsNullOrInfiniteOrGreaterThanOrEqualToZero(value, nameof(value)); }
         }
 
         /// <summary>
@@ -207,12 +223,22 @@ namespace MongoDB.Driver.Core.Operations
         }
 
         // methods
-        internal BsonDocument CreateCommand()
+        /// <summary>
+        /// Creates the command.
+        /// </summary>
+        /// <param name="session">The session.</param>
+        /// <param name="connectionDescription">The connection description.</param>
+        /// <returns>
+        /// The command.
+        /// </returns>
+        protected internal virtual BsonDocument CreateCommand(ICoreSessionHandle session, ConnectionDescription connectionDescription)
         {
+            var serverVersion = connectionDescription.ServerVersion;
+            Feature.Collation.ThrowIfNotSupported(serverVersion, _collation);
+
             return new BsonDocument
             {
-                // all lowercase command name for backwards compatibility
-                { "mapreduce", _collectionNamespace.CollectionName },
+                { "mapreduce", _collectionNamespace.CollectionName }, // all lowercase command name for backwards compatibility
                 { "map", _mapFunction },
                 { "reduce", _reduceFunction },
                 { "out" , CreateOutputOptions() },
@@ -223,7 +249,8 @@ namespace MongoDB.Driver.Core.Operations
                 { "scope", _scope, _scope != null },
                 { "jsMode", () => _javaScriptMode.Value, _javaScriptMode.HasValue },
                 { "verbose", () => _verbose.Value, _verbose.HasValue },
-                { "maxTimeMS", () => _maxTime.Value.TotalMilliseconds, _maxTime.HasValue }
+                { "maxTimeMS", () => MaxTimeHelper.ToMaxTimeMS(_maxTime.Value), _maxTime.HasValue },
+                { "collation", () => _collation.ToBsonDocument(), _collation != null }
             };
         }
 

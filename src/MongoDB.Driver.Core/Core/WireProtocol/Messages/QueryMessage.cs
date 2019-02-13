@@ -1,4 +1,4 @@
-﻿/* Copyright 2013-2014 MongoDB Inc.
+/* Copyright 2013-present MongoDB Inc.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -33,16 +33,19 @@ namespace MongoDB.Driver.Core.WireProtocol.Messages
         private readonly CollectionNamespace _collectionNamespace;
         private readonly BsonDocument _fields;
         private readonly bool _noCursorTimeout;
+        private readonly bool _oplogReplay;
         private readonly bool _partialOk;
+        private Action<IMessageEncoderPostProcessor> _postWriteAction;
         private readonly BsonDocument _query;
         private readonly IElementNameValidator _queryValidator;
+        private CommandResponseHandling _responseHandling = CommandResponseHandling.Return;
         private readonly int _skip;
         private readonly bool _slaveOk;
         private readonly bool _tailableCursor;
 
         // constructors
         /// <summary>
-        /// Initializes a new instance of the <see cref="QueryMessage"/> class.
+        /// Initializes a new instance of the <see cref="QueryMessage" /> class.
         /// </summary>
         /// <param name="requestId">The request identifier.</param>
         /// <param name="collectionNamespace">The collection namespace.</param>
@@ -54,6 +57,7 @@ namespace MongoDB.Driver.Core.WireProtocol.Messages
         /// <param name="slaveOk">if set to <c>true</c> it is OK if the server is not the primary.</param>
         /// <param name="partialOk">if set to <c>true</c> the server is allowed to return partial results if any shards are unavailable.</param>
         /// <param name="noCursorTimeout">if set to <c>true</c> the server should not timeout the cursor.</param>
+        /// <param name="oplogReplay">if set to <c>true</c> the OplogReplay bit will be set.</param>
         /// <param name="tailableCursor">if set to <c>true</c> the query should return a tailable cursor.</param>
         /// <param name="awaitData">if set to <c>true</c> the server should await data (used with tailable cursors).</param>
         /// <param name="shouldBeSent">A delegate that determines whether this message should be sent.</param>
@@ -68,20 +72,22 @@ namespace MongoDB.Driver.Core.WireProtocol.Messages
             bool slaveOk,
             bool partialOk,
             bool noCursorTimeout,
+            bool oplogReplay,
             bool tailableCursor,
             bool awaitData,
             Func<bool> shouldBeSent = null)
             : base(requestId, shouldBeSent)
         {
-            _collectionNamespace = Ensure.IsNotNull(collectionNamespace, "collectionNamespace");
-            _query = Ensure.IsNotNull(query, "query");
+            _collectionNamespace = Ensure.IsNotNull(collectionNamespace, nameof(collectionNamespace));
+            _query = Ensure.IsNotNull(query, nameof(query));
             _fields = fields; // can be null
-            _queryValidator = Ensure.IsNotNull(queryValidator, "queryValidator");
-            _skip = Ensure.IsGreaterThanOrEqualToZero(skip, "skip");
+            _queryValidator = Ensure.IsNotNull(queryValidator, nameof(queryValidator));
+            _skip = Ensure.IsGreaterThanOrEqualToZero(skip, nameof(skip));
             _batchSize = batchSize; // can be negative
             _slaveOk = slaveOk;
             _partialOk = partialOk;
             _noCursorTimeout = noCursorTimeout;
+            _oplogReplay = oplogReplay;
             _tailableCursor = tailableCursor;
             _awaitData = awaitData;
         }
@@ -90,9 +96,6 @@ namespace MongoDB.Driver.Core.WireProtocol.Messages
         /// <summary>
         /// Gets a value indicating whether the server should await data (used with tailable cursors).
         /// </summary>
-        /// <value>
-        ///   <c>true</c> if the server should await data (used with tailable cursors); otherwise, <c>false</c>.
-        /// </value>
         public bool AwaitData
         {
             get { return _awaitData; }
@@ -101,9 +104,6 @@ namespace MongoDB.Driver.Core.WireProtocol.Messages
         /// <summary>
         /// Gets the size of a batch.
         /// </summary>
-        /// <value>
-        /// The size of a batch.
-        /// </value>
         public int BatchSize
         {
             get { return _batchSize; }
@@ -112,9 +112,6 @@ namespace MongoDB.Driver.Core.WireProtocol.Messages
         /// <summary>
         /// Gets the collection namespace.
         /// </summary>
-        /// <value>
-        /// The collection namespace.
-        /// </value>
         public CollectionNamespace CollectionNamespace
         {
             get { return _collectionNamespace; }
@@ -123,42 +120,59 @@ namespace MongoDB.Driver.Core.WireProtocol.Messages
         /// <summary>
         /// Gets the fields.
         /// </summary>
-        /// <value>
-        /// The fields.
-        /// </value>
         public BsonDocument Fields
         {
             get { return _fields; }
         }
 
+        /// <inheritdoc/>
+        public override MongoDBMessageType MessageType
+        {
+            get { return MongoDBMessageType.Query; }
+        }
+
         /// <summary>
         /// Gets a value indicating whether the server should not timeout the cursor.
         /// </summary>
-        /// <value>
-        ///   <c>true</c> if the server should not timeout the cursor; otherwise, <c>false</c>.
-        /// </value>
         public bool NoCursorTimeout
         {
             get { return _noCursorTimeout; }
         }
 
         /// <summary>
-        /// Gets a value indicating whether the server is allowed to return partial results if any shards are unavailable.
+        /// Gets a value indicating whether the OplogReplay bit will be set.
         /// </summary>
         /// <value>
-        ///   <c>true</c> if the server is allowed to return partial results if any shards are unavailable; otherwise, <c>false</c>.
+        ///   <c>true</c> if the OplogReplay bit will be set; otherwise, <c>false</c>.
         /// </value>
+        public bool OplogReplay
+        {
+            get { return _oplogReplay; }
+        }
+
+        /// <summary>
+        /// Gets a value indicating whether the server is allowed to return partial results if any shards are unavailable.
+        /// </summary>
         public bool PartialOk
         {
             get { return _partialOk; }
         }
 
         /// <summary>
-        /// Gets the query.
+        /// Gets or sets the delegate called to after the message has been written by the encoder.
         /// </summary>
         /// <value>
-        /// The query.
+        /// The post write delegate.
         /// </value>
+        public Action<IMessageEncoderPostProcessor> PostWriteAction
+        {
+            get { return _postWriteAction; }
+            set { _postWriteAction = value; }
+        }
+
+        /// <summary>
+        /// Gets the query.
+        /// </summary>
         public BsonDocument Query
         {
             get { return _query; }
@@ -167,20 +181,33 @@ namespace MongoDB.Driver.Core.WireProtocol.Messages
         /// <summary>
         /// Gets the query validator.
         /// </summary>
-        /// <value>
-        /// The query validator.
-        /// </value>
         public IElementNameValidator QueryValidator
         {
             get { return _queryValidator; }
         }
 
         /// <summary>
-        /// Gets the number of documents to skip.
+        /// Gets or sets the response handling.
         /// </summary>
         /// <value>
-        /// The number of documents to skip.
+        /// The response handling.
         /// </value>
+        public CommandResponseHandling ResponseHandling
+        {
+            get { return _responseHandling; }
+            set
+            {
+                if (value != CommandResponseHandling.Return && value != CommandResponseHandling.Ignore)
+                {
+                    throw new ArgumentException("CommandResponseHandling must be Return or Ignore.", nameof(value));
+                }
+                _responseHandling = value;
+            }
+        }
+
+        /// <summary>
+        /// Gets the number of documents to skip.
+        /// </summary>
         public int Skip
         {
             get { return _skip; }
@@ -189,9 +216,6 @@ namespace MongoDB.Driver.Core.WireProtocol.Messages
         /// <summary>
         /// Gets a value indicating whether it is OK if the server is not the primary.
         /// </summary>
-        /// <value>
-        ///   <c>true</c> if it is OK if the server is not the primary; otherwise, <c>false</c>.
-        /// </value>
         public bool SlaveOk
         {
             get { return _slaveOk; }
@@ -200,9 +224,6 @@ namespace MongoDB.Driver.Core.WireProtocol.Messages
         /// <summary>
         /// Gets a value indicating whether the query should return a tailable cursor.
         /// </summary>
-        /// <value>
-        ///   <c>true</c> if the query should return a tailable cursort; otherwise, <c>false</c>.
-        /// </value>
         public bool TailableCursor
         {
             get { return _tailableCursor; }

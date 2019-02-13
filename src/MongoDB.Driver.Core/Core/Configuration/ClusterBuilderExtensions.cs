@@ -1,4 +1,4 @@
-﻿/* Copyright 2010-2014 MongoDB Inc.
+/* Copyright 2010-present MongoDB Inc.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -15,6 +15,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using System.Net;
 using System.Net.Security;
@@ -22,6 +23,7 @@ using System.Net.Sockets;
 using System.Security.Cryptography.X509Certificates;
 using MongoDB.Driver.Core.Authentication;
 using MongoDB.Driver.Core.Clusters;
+using MongoDB.Driver.Core.Events;
 using MongoDB.Driver.Core.Events.Diagnostics;
 using MongoDB.Driver.Core.Misc;
 
@@ -40,10 +42,11 @@ namespace MongoDB.Driver.Core.Configuration
         /// <returns>A reconfigured cluster builder.</returns>
         public static ClusterBuilder ConfigureWithConnectionString(this ClusterBuilder builder, string connectionString)
         {
-            Ensure.IsNotNull(builder, "builder");
-            Ensure.IsNotNullOrEmpty(connectionString, "connectionString");
+            Ensure.IsNotNull(builder, nameof(builder));
+            Ensure.IsNotNullOrEmpty(connectionString, nameof(connectionString));
 
             var parsedConnectionString = new ConnectionString(connectionString);
+
             return ConfigureWithConnectionString(builder, parsedConnectionString);
         }
 
@@ -55,13 +58,23 @@ namespace MongoDB.Driver.Core.Configuration
         /// <returns>A reconfigured cluster builder.</returns>
         public static ClusterBuilder ConfigureWithConnectionString(this ClusterBuilder builder, ConnectionString connectionString)
         {
-            Ensure.IsNotNull(builder, "builder");
-            Ensure.IsNotNull(connectionString, "connectionString");
+            Ensure.IsNotNull(builder, nameof(builder));
+            Ensure.IsNotNull(connectionString, nameof(connectionString));
+
+            connectionString = connectionString.Resolve();
 
             // TCP
             if (connectionString.ConnectTimeout != null)
             {
                 builder = builder.ConfigureTcp(s => s.With(connectTimeout: connectionString.ConnectTimeout.Value));
+            }
+            if (connectionString.HeartbeatInterval.HasValue)
+            {
+                builder = builder.ConfigureServer(s => s.With(heartbeatInterval: connectionString.HeartbeatInterval.Value));
+            }
+            if (connectionString.HeartbeatTimeout.HasValue)
+            {
+                builder = builder.ConfigureServer(s => s.With(heartbeatTimeout: connectionString.HeartbeatTimeout.Value));
             }
             if (connectionString.Ipv6.HasValue && connectionString.Ipv6.Value)
             {
@@ -95,7 +108,10 @@ namespace MongoDB.Driver.Core.Configuration
                 var authenticator = CreateAuthenticator(connectionString);
                 builder = builder.ConfigureConnection(s => s.With(authenticators: new[] { authenticator }));
             }
-
+            if (connectionString.ApplicationName != null)
+            {
+                builder = builder.ConfigureConnection(s => s.With(applicationName: connectionString.ApplicationName));
+            }
             if (connectionString.MaxIdleTime != null)
             {
                 builder = builder.ConfigureConnection(s => s.With(maxIdleTime: connectionString.MaxIdleTime.Value));
@@ -132,6 +148,7 @@ namespace MongoDB.Driver.Core.Configuration
             // Server
 
             // Cluster
+            builder = builder.ConfigureCluster(s => s.With(connectionMode: connectionString.Connect));
             if (connectionString.Hosts.Count > 0)
             {
                 builder = builder.ConfigureCluster(s => s.With(endPoints: Optional.Enumerable(connectionString.Hosts)));
@@ -139,7 +156,12 @@ namespace MongoDB.Driver.Core.Configuration
             if (connectionString.ReplicaSet != null)
             {
                 builder = builder.ConfigureCluster(s => s.With(
+                    connectionMode: ClusterConnectionMode.ReplicaSet,
                     replicaSetName: connectionString.ReplicaSet));
+            }
+            if (connectionString.ServerSelectionTimeout != null)
+            {
+                builder = builder.ConfigureCluster(s => s.With(serverSelectionTimeout: connectionString.ServerSelectionTimeout.Value));
             }
 
             return builder;
@@ -170,13 +192,19 @@ namespace MongoDB.Driver.Core.Configuration
                 {
                     return new DefaultAuthenticator(credential);
                 }
+#pragma warning disable 618
                 else if (connectionString.AuthMechanism == MongoDBCRAuthenticator.MechanismName)
                 {
                     return new MongoDBCRAuthenticator(credential);
+#pragma warning restore 618
                 }
                 else if (connectionString.AuthMechanism == ScramSha1Authenticator.MechanismName)
                 {
                     return new ScramSha1Authenticator(credential);
+                }
+                else if (connectionString.AuthMechanism == ScramSha256Authenticator.MechanismName)
+                {
+                    return new ScramSha256Authenticator(credential);
                 }
                 else if (connectionString.AuthMechanism == PlainAuthenticator.MechanismName)
                 {
@@ -204,7 +232,7 @@ namespace MongoDB.Driver.Core.Configuration
 
         private static string GetDefaultSource(ConnectionString connectionString)
         {
-            if (connectionString.AuthMechanism != null && connectionString.AuthMechanism.Equals("GSSAPI", StringComparison.InvariantCultureIgnoreCase))
+            if (connectionString.AuthMechanism != null && connectionString.AuthMechanism.Equals("GSSAPI", StringComparison.OrdinalIgnoreCase))
             {
                 return "$external";
             }
@@ -212,8 +240,9 @@ namespace MongoDB.Driver.Core.Configuration
             return "admin";
         }
 
+#if NET452
         /// <summary>
-        /// Configures the cluster builder to use performance counters.
+        /// Configures the cluster to write performance counters.
         /// </summary>
         /// <param name="builder">The cluster builder.</param>
         /// <param name="applicationName">The name of the application.</param>
@@ -221,14 +250,44 @@ namespace MongoDB.Driver.Core.Configuration
         /// <returns>A reconfigured cluster builder.</returns>
         public static ClusterBuilder UsePerformanceCounters(this ClusterBuilder builder, string applicationName, bool install = false)
         {
-            Ensure.IsNotNull(builder, "builder");
+            Ensure.IsNotNull(builder, nameof(builder));
 
             if (install)
             {
-                PerformanceCounterListener.InstallPerformanceCounters();
+                PerformanceCounterEventSubscriber.InstallPerformanceCounters();
             }
 
-            return builder.AddListener(new PerformanceCounterListener(applicationName));
+            var subscriber = new PerformanceCounterEventSubscriber(applicationName);
+            return builder.Subscribe(subscriber);
+        }
+#endif
+        
+        /// <summary>
+        /// Configures the cluster to trace events to the specified <paramref name="traceSource"/>.
+        /// </summary>
+        /// <param name="builder">The builder.</param>
+        /// <param name="traceSource">The trace source.</param>
+        /// <returns>A reconfigured cluster builder.</returns>
+        public static ClusterBuilder TraceWith(this ClusterBuilder builder, TraceSource traceSource)
+        {
+            Ensure.IsNotNull(builder, nameof(builder));
+            Ensure.IsNotNull(traceSource, nameof(traceSource));
+
+            return builder.Subscribe(new TraceSourceEventSubscriber(traceSource));
+        }
+
+        /// <summary>
+        /// Configures the cluster to trace command events to the specified <paramref name="traceSource"/>.
+        /// </summary>
+        /// <param name="builder">The builder.</param>
+        /// <param name="traceSource">The trace source.</param>
+        /// <returns>A reconfigured cluster builder.</returns>
+        public static ClusterBuilder TraceCommandsWith(this ClusterBuilder builder, TraceSource traceSource)
+        {
+            Ensure.IsNotNull(builder, nameof(builder));
+            Ensure.IsNotNull(traceSource, nameof(traceSource));
+
+            return builder.Subscribe(new TraceSourceCommandEventSubscriber(traceSource));
         }
     }
 }

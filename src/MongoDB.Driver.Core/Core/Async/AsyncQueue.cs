@@ -1,4 +1,4 @@
-﻿/* Copyright 2013-2014 MongoDB Inc.
+/* Copyright 2013-present MongoDB Inc.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -28,6 +28,18 @@ namespace MongoDB.Driver.Core.Async
         private readonly object _lock = new object();
         private readonly Queue<T> _queue = new Queue<T>();
         private readonly Queue<TaskCompletionSource<T>> _awaiters = new Queue<TaskCompletionSource<T>>();
+
+        // properties
+        public int Count
+        {
+            get
+            {
+                lock (_lock)
+                {
+                    return _queue.Count;
+                }
+            }
+        }
 
         // methods
         public IEnumerable<T> DequeueAll()

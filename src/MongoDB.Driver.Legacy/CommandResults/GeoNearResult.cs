@@ -1,4 +1,4 @@
-﻿/* Copyright 2010-2014 MongoDB Inc.
+/* Copyright 2010-present MongoDB Inc.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -27,7 +27,9 @@ namespace MongoDB.Driver
     /// <summary>
     /// Represents the result of a GeoNear command.
     /// </summary>
+#if NET452
     [Serializable]
+#endif
     public abstract class GeoNearResult : CommandResult
     {
         // private fields
@@ -271,7 +273,9 @@ namespace MongoDB.Driver
     /// Represents the result of a GeoNear command.
     /// </summary>
     /// <typeparam name="TDocument">The type of the returned documents.</typeparam>
+#if NET452
     [Serializable]
+#endif
     [BsonSerializer(typeof(GeoNearResult<>.Serializer))]
     public class GeoNearResult<TDocument> : GeoNearResult
     {

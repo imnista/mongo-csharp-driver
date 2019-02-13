@@ -1,4 +1,4 @@
-﻿/* Copyright 2013-2014 MongoDB Inc.
+/* Copyright 2013-present MongoDB Inc.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -14,17 +14,15 @@
 */
 
 using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
+using System.Diagnostics;
 using System.Threading;
-using System.Threading.Tasks;
 
 namespace MongoDB.Driver.Core.Misc
 {
     /// <summary>
     /// Represents methods that can be used to ensure that parameter values meet expected conditions.
     /// </summary>
+    [DebuggerStepThrough]
     public static class Ensure
     {
         /// <summary>
@@ -59,7 +57,7 @@ namespace MongoDB.Driver.Core.Misc
             if (!value.Equals(comparand))
             {
                 var message = string.Format("Value is not equal to {1}: {0}.", value, comparand);
-                throw new ArgumentException(paramName, message);
+                throw new ArgumentException(message, paramName);
             }
             return value;
         }
@@ -109,6 +107,22 @@ namespace MongoDB.Driver.Core.Misc
             if (value < 0)
             {
                 var message = string.Format("Value is not greater than or equal to 0: {0}.", value);
+                throw new ArgumentOutOfRangeException(paramName, message);
+            }
+            return value;
+        }
+
+        /// <summary>
+        /// Ensures that the value of a parameter is greater than or equal to zero.
+        /// </summary>
+        /// <param name="value">The value of the parameter.</param>
+        /// <param name="paramName">The name of the parameter.</param>
+        /// <returns>The value of the parameter.</returns>
+        public static TimeSpan IsGreaterThanOrEqualToZero(TimeSpan value, string paramName)
+        {
+            if (value < TimeSpan.Zero)
+            {
+                var message = string.Format("Value is not greater than or equal to zero: {0}.", TimeSpanParser.ToString(value));
                 throw new ArgumentOutOfRangeException(paramName, message);
             }
             return value;
@@ -176,6 +190,22 @@ namespace MongoDB.Driver.Core.Misc
                 throw new ArgumentOutOfRangeException(paramName, message);
             }
             return value;
+        }
+
+        /// <summary>
+        /// Ensures that the value of a parameter is infinite or greater than zero.
+        /// </summary>
+        /// <param name="value">The value of the parameter.</param>
+        /// <param name="paramName">The name of the parameter.</param>
+        /// <returns>The value of the parameter.</returns>
+        public static TimeSpan IsInfiniteOrGreaterThanZero(TimeSpan value, string paramName)
+        {
+            if (value == Timeout.InfiniteTimeSpan || value > TimeSpan.Zero)
+            {
+                return value;
+            }
+            var message = string.Format("Value is not infinite or greater than zero: {0}.", TimeSpanParser.ToString(value));
+            throw new ArgumentOutOfRangeException(paramName, message);
         }
 
         /// <summary>
@@ -328,7 +358,7 @@ namespace MongoDB.Driver.Core.Misc
         /// <returns>The value of the parameter.</returns>
         public static string IsNullOrNotEmpty(string value, string paramName)
         {
-            if (value != null && value != "")
+            if (value != null && value == "")
             {
                 throw new ArgumentException("Value cannot be empty.", paramName);
             }
@@ -376,6 +406,20 @@ namespace MongoDB.Driver.Core.Misc
             if (!assertion)
             {
                 throw new ArgumentException(message);
+            }
+        }
+
+        /// <summary>
+        /// Ensures that an assertion is true.
+        /// </summary>
+        /// <param name="assertion">The assertion.</param>
+        /// <param name="message">The message to use with the exception that is thrown if the assertion is false.</param>
+        /// <param name="paramName">The parameter name.</param>
+        public static void That(bool assertion, string message, string paramName)
+        {
+            if (!assertion)
+            {
+                throw new ArgumentException(message, paramName);
             }
         }
 

@@ -1,4 +1,4 @@
-﻿/* Copyright 2010-2014 MongoDB Inc.
+/* Copyright 2010-present MongoDB Inc.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -104,6 +104,9 @@ namespace MongoDB.Bson.Serialization.Serializers
                     var bsonDateTime = new BsonDateTime(millisecondsSinceEpoch);
                     return bsonDateTime.ToUniversalTime();
 
+                case BsonType.Decimal128:
+                    return bsonReader.ReadDecimal128();
+
                 case BsonType.Document:
                     return DeserializeDiscriminatedValue(context, args);
 
@@ -190,6 +193,12 @@ namespace MongoDB.Bson.Serialization.Serializers
                                 return;
 
                             case TypeCode.Object:
+                                if (actualType == typeof(Decimal128))
+                                {
+                                    var decimal128 = (Decimal128)value;
+                                    bsonWriter.WriteDecimal128(decimal128);
+                                    return;
+                                }
                                 if (actualType == typeof(Guid))
                                 {
                                     var guid = (Guid)value;
@@ -249,12 +258,34 @@ namespace MongoDB.Bson.Serialization.Serializers
                 }
                 else
                 {
+                    object value = null;
+                    var wasValuePresent = false;
+
                     bsonReader.ReadStartDocument();
-                    bsonReader.ReadName(_discriminatorConvention.ElementName);
-                    bsonReader.SkipValue();
-                    bsonReader.ReadName("_v");
-                    var value = serializer.Deserialize(context);
+                    while (bsonReader.ReadBsonType() != 0)
+                    {
+                        var name = bsonReader.ReadName();
+                        if (name == _discriminatorConvention.ElementName)
+                        {
+                            bsonReader.SkipValue();
+                        }
+                        else if (name == "_v")
+                        {
+                            value = serializer.Deserialize(context);
+                            wasValuePresent = true;
+                        }
+                        else
+                        {
+                            var message = string.Format("Unexpected element name: '{0}'.", name);
+                            throw new FormatException(message);
+                        }
+                    }
                     bsonReader.ReadEndDocument();
+
+                    if (!wasValuePresent)
+                    {
+                        throw new FormatException("_v element missing.");
+                    }
 
                     return value;
                 }

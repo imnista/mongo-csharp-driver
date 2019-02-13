@@ -1,4 +1,4 @@
-﻿/* Copyright 2010-2014 MongoDB Inc.
+﻿/* Copyright 2010-present MongoDB Inc.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -21,11 +21,13 @@ namespace MongoDB.Bson
     /// <summary>
     /// Represents a BSON timestamp value.
     /// </summary>
+#if NET452
     [Serializable]
+#endif
     public class BsonTimestamp : BsonValue, IComparable<BsonTimestamp>, IEquatable<BsonTimestamp>
     {
         // private fields
-        private long _value;
+        private readonly long _value;
 
         // constructors
         /// <summary>
@@ -44,7 +46,7 @@ namespace MongoDB.Bson
         /// <param name="increment">The increment.</param>
         public BsonTimestamp(int timestamp, int increment)
         {
-            _value = ((long)timestamp << 32) + increment;
+            _value = (long)(((ulong)(uint)timestamp << 32) | (ulong)(uint)increment);
         }
 
         // public operators

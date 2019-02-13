@@ -1,4 +1,4 @@
-﻿/* Copyright 2013-2014 MongoDB Inc.
+/* Copyright 2013-present MongoDB Inc.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -19,6 +19,7 @@ using System.Threading.Tasks;
 using MongoDB.Bson;
 using MongoDB.Bson.Serialization.Serializers;
 using MongoDB.Driver.Core.Bindings;
+using MongoDB.Driver.Core.Connections;
 using MongoDB.Driver.Core.Misc;
 using MongoDB.Driver.Core.WireProtocol.Messages.Encoders;
 
@@ -34,6 +35,7 @@ namespace MongoDB.Driver.Core.Operations
         private bool? _dropTarget;
         private readonly MessageEncoderSettings _messageEncoderSettings;
         private readonly CollectionNamespace _newCollectionNamespace;
+        private WriteConcern _writeConcern;
 
         // constructors
         /// <summary>
@@ -47,8 +49,8 @@ namespace MongoDB.Driver.Core.Operations
             CollectionNamespace newCollectionNamespace,
             MessageEncoderSettings messageEncoderSettings)
         {
-            _collectionNamespace = Ensure.IsNotNull(collectionNamespace, "collectionNamespace");
-            _newCollectionNamespace = Ensure.IsNotNull(newCollectionNamespace, "newCollectionNamespace");
+            _collectionNamespace = Ensure.IsNotNull(collectionNamespace, nameof(collectionNamespace));
+            _newCollectionNamespace = Ensure.IsNotNull(newCollectionNamespace, nameof(newCollectionNamespace));
             _messageEncoderSettings = messageEncoderSettings;
         }
 
@@ -98,24 +100,63 @@ namespace MongoDB.Driver.Core.Operations
             get { return _newCollectionNamespace; }
         }
 
-        // methods
-        internal BsonDocument CreateCommand()
+        /// <summary>
+        /// Gets or sets the write concern.
+        /// </summary>
+        /// <value>
+        /// The write concern.
+        /// </value>
+        public WriteConcern WriteConcern
         {
+            get { return _writeConcern; }
+            set { _writeConcern = value; }
+        }
+
+        // methods
+        internal BsonDocument CreateCommand(ICoreSessionHandle session, ConnectionDescription connectionDescription)
+        {
+            var writeConcern = WriteConcernHelper.GetWriteConcernForCommandThatWrites(session, _writeConcern, connectionDescription.ServerVersion);
             return new BsonDocument
             {
                 { "renameCollection", _collectionNamespace.FullName },
                 { "to", _newCollectionNamespace.FullName },
-                { "dropTarget", () => _dropTarget.Value, _dropTarget.HasValue }
+                { "dropTarget", () => _dropTarget.Value, _dropTarget.HasValue },
+                { "writeConcern", writeConcern, writeConcern != null }
             };
+        }
+
+        private WriteCommandOperation<BsonDocument> CreateOperation(ICoreSessionHandle session, ConnectionDescription connectionDescription)
+        {
+            var command = CreateCommand(session, connectionDescription);
+            return new WriteCommandOperation<BsonDocument>(DatabaseNamespace.Admin, command, BsonDocumentSerializer.Instance, _messageEncoderSettings);
+        }
+
+        /// <inheritdoc/>
+        public BsonDocument Execute(IWriteBinding binding, CancellationToken cancellationToken)
+        {
+            Ensure.IsNotNull(binding, nameof(binding));
+
+            using (var channelSource = binding.GetWriteChannelSource(cancellationToken))
+            using (var channel = channelSource.GetChannel(cancellationToken))
+            using (var channelBinding = new ChannelReadWriteBinding(channelSource.Server, channel, binding.Session.Fork()))
+            {
+                var operation = CreateOperation(channelBinding.Session, channel.ConnectionDescription);
+                return operation.Execute(channelBinding, cancellationToken);
+            }
         }
 
         /// <inheritdoc/>
         public async Task<BsonDocument> ExecuteAsync(IWriteBinding binding, CancellationToken cancellationToken)
         {
-            Ensure.IsNotNull(binding, "binding");
-            var command = CreateCommand();
-            var operation = new WriteCommandOperation<BsonDocument>(DatabaseNamespace.Admin, command, BsonDocumentSerializer.Instance, _messageEncoderSettings);
-            return await operation.ExecuteAsync(binding, cancellationToken).ConfigureAwait(false);
+            Ensure.IsNotNull(binding, nameof(binding));
+
+            using (var channelSource = await binding.GetWriteChannelSourceAsync(cancellationToken).ConfigureAwait(false))
+            using (var channel = await channelSource.GetChannelAsync(cancellationToken).ConfigureAwait(false))
+            using (var channelBinding = new ChannelReadWriteBinding(channelSource.Server, channel, binding.Session.Fork()))
+            {
+                var operation = CreateOperation(channelBinding.Session, channel.ConnectionDescription);
+                return await operation.ExecuteAsync(channelBinding, cancellationToken).ConfigureAwait(false);
+            }
         }
     }
 }

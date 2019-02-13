@@ -1,4 +1,4 @@
-﻿/* Copyright 2010-2014 MongoDB Inc.
+/* Copyright 2010-present MongoDB Inc.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -23,7 +23,9 @@ namespace MongoDB.Driver
     /// <summary>
     /// Represents the results of an operation performed with an acknowledged WriteConcern.
     /// </summary>
+#if NET452
     [Serializable]
+#endif
     public class WriteConcernResult
     {
         // fields
@@ -36,7 +38,7 @@ namespace MongoDB.Driver
         /// <param name="response">The response.</param>
         public WriteConcernResult(BsonDocument response)
         {
-            _response = Ensure.IsNotNull(response, "response");
+            _response = Ensure.IsNotNull(response, nameof(response));
         }
 
         // properties

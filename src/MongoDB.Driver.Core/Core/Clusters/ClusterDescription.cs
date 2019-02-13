@@ -1,4 +1,4 @@
-﻿/* Copyright 2013-2014 MongoDB Inc.
+/* Copyright 2013-present MongoDB Inc.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -29,56 +29,121 @@ namespace MongoDB.Driver.Core.Clusters
     public sealed class ClusterDescription : IEquatable<ClusterDescription>
     {
         #region static
-        // static methods
-        internal static ClusterDescription CreateInitial(ClusterId clusterId, ClusterType clusterType)
+        // internal static methods
+        internal static ClusterDescription CreateInitial(ClusterId clusterId, ClusterConnectionMode connectionMode)
         {
             return new ClusterDescription(
                 clusterId,
-                clusterType,
+                connectionMode,
+                ClusterType.Unknown,
                 Enumerable.Empty<ServerDescription>());
+        }
+
+        // private static methods
+        private static TimeSpan? CalculateLogicalSessionTimeout(ClusterConnectionMode connectionMode, IEnumerable<ServerDescription> servers)
+        {
+            TimeSpan? logicalSessionTimeout = null;
+
+            foreach (var server in SelectServersThatDetermineWhetherSessionsAreSupported(connectionMode, servers))
+            {
+                if (server.LogicalSessionTimeout == null)
+                {
+                    return null;
+                }
+
+                if (logicalSessionTimeout == null || server.LogicalSessionTimeout.Value < logicalSessionTimeout.Value)
+                {
+                    logicalSessionTimeout = server.LogicalSessionTimeout;
+                }
+            }
+
+            return logicalSessionTimeout;
+        }
+
+        private static IEnumerable<ServerDescription> SelectServersThatDetermineWhetherSessionsAreSupported(ClusterConnectionMode connectionMode, IEnumerable<ServerDescription> servers)
+        {
+            var connectedServers = servers.Where(s => s.State == ServerState.Connected);
+            if (connectionMode == ClusterConnectionMode.Direct)
+            {
+                return connectedServers;
+            }
+            else
+            {
+                return connectedServers.Where(s => s.IsDataBearing);
+            }
         }
         #endregion
 
         // fields
         private readonly ClusterId _clusterId;
+        private readonly ClusterConnectionMode _connectionMode;
+        private readonly TimeSpan? _logicalSessionTimeout;
         private readonly IReadOnlyList<ServerDescription> _servers;
         private readonly ClusterType _type;
 
         // constructors
         /// <summary>
-        /// Initializes a new instance of the <see cref="ClusterDescription"/> class.
+        /// Initializes a new instance of the <see cref="ClusterDescription" /> class.
         /// </summary>
         /// <param name="clusterId">The cluster identifier.</param>
+        /// <param name="connectionMode">The connection mode.</param>
         /// <param name="type">The type.</param>
         /// <param name="servers">The servers.</param>
         public ClusterDescription(
             ClusterId clusterId,
+            ClusterConnectionMode connectionMode,
             ClusterType type,
             IEnumerable<ServerDescription> servers)
         {
-            _clusterId = Ensure.IsNotNull(clusterId, "clusterId");
+            _clusterId = Ensure.IsNotNull(clusterId, nameof(clusterId));
+            _connectionMode = connectionMode;
             _type = type;
             _servers = (servers ?? new ServerDescription[0]).OrderBy(n => n.EndPoint, new ToStringComparer<EndPoint>()).ToList();
+            _logicalSessionTimeout = CalculateLogicalSessionTimeout(_connectionMode, _servers);
         }
 
         // properties
         /// <summary>
         /// Gets the cluster identifier.
         /// </summary>
-        /// <value>
-        /// The cluster identifier.
-        /// </value>
         public ClusterId ClusterId
         {
             get { return _clusterId; }
         }
 
         /// <summary>
-        /// Gets the servers.
+        /// Gets the connection mode.
+        /// </summary>
+        public ClusterConnectionMode ConnectionMode
+        {
+            get { return _connectionMode; }
+        }
+
+        /// <summary>
+        /// Gets a value indicating whether this cluster is compatible with the driver.
         /// </summary>
         /// <value>
-        /// The servers.
+        ///   <c>true</c> if this cluster is compatible with the driver; otherwise, <c>false</c>.
         /// </value>
+        public bool IsCompatibleWithDriver
+        {
+            get
+            {
+                return _servers.All(s => s.IsCompatibleWithDriver);
+            }
+        }
+
+        /// <summary>
+        /// Gets the logical session timeout.
+        /// </summary>
+        public TimeSpan? LogicalSessionTimeout
+        {
+            get { return _logicalSessionTimeout; }
+        }
+
+        /// <summary>
+        /// Gets the servers.
+        /// </summary>
         public IReadOnlyList<ServerDescription> Servers
         {
             get { return _servers; }
@@ -87,9 +152,6 @@ namespace MongoDB.Driver.Core.Clusters
         /// <summary>
         /// Gets the cluster state.
         /// </summary>
-        /// <value>
-        /// The cluster state.
-        /// </value>
         public ClusterState State
         {
             get { return _servers.Any(x => x.State == ServerState.Connected) ? ClusterState.Connected : ClusterState.Disconnected; }
@@ -98,9 +160,6 @@ namespace MongoDB.Driver.Core.Clusters
         /// <summary>
         /// Gets the cluster type.
         /// </summary>
-        /// <value>
-        /// The cluster type.
-        /// </value>
         public ClusterType Type
         {
             get { return _type; }
@@ -117,6 +176,7 @@ namespace MongoDB.Driver.Core.Clusters
 
             return
                 _clusterId.Equals(other._clusterId) &&
+                _connectionMode == other._connectionMode &&
                 _servers.SequenceEqual(other._servers) &&
                 _type == other._type;
         }
@@ -133,6 +193,7 @@ namespace MongoDB.Driver.Core.Clusters
             // ignore _revision
             return new Hasher()
                 .Hash(_clusterId)
+                .Hash(_connectionMode)
                 .HashElements(_servers)
                 .Hash(_type)
                 .GetHashCode();
@@ -143,8 +204,9 @@ namespace MongoDB.Driver.Core.Clusters
         {
             var servers = string.Join(", ", _servers.Select(n => n.ToString()).ToArray());
             return string.Format(
-                "{{ ClusterId : \"{0}\", Type : \"{1}\", State : \"{2}\", Servers : [{3}] }}",
+                "{{ ClusterId : \"{0}\", ConnectionMode : \"{1}\", Type : \"{2}\", State : \"{3}\", Servers : [{4}] }}",
                 _clusterId,
+                _connectionMode,
                 _type,
                 State,
                 servers);
@@ -157,7 +219,7 @@ namespace MongoDB.Driver.Core.Clusters
         /// <returns>A ClusterDescription.</returns>
         public ClusterDescription WithServerDescription(ServerDescription value)
         {
-            Ensure.IsNotNull(value, "value");
+            Ensure.IsNotNull(value, nameof(value));
 
             IEnumerable<ServerDescription> replacementServers;
 
@@ -178,6 +240,7 @@ namespace MongoDB.Driver.Core.Clusters
 
             return new ClusterDescription(
                 _clusterId,
+                _connectionMode,
                 _type,
                 replacementServers);
         }
@@ -196,9 +259,10 @@ namespace MongoDB.Driver.Core.Clusters
             }
 
             return new ClusterDescription(
-                    _clusterId,
-                    _type,
-                    _servers.Where(s => !EndPointHelper.Equals(s.EndPoint, endPoint)));
+                _clusterId,
+                _connectionMode,
+                _type,
+                _servers.Where(s => !EndPointHelper.Equals(s.EndPoint, endPoint)));
         }
 
         /// <summary>
@@ -208,7 +272,7 @@ namespace MongoDB.Driver.Core.Clusters
         /// <returns>A ClusterDescription.</returns>
         public ClusterDescription WithType(ClusterType value)
         {
-            return _type == value ? this : new ClusterDescription(_clusterId, value, _servers);
+            return _type == value ? this : new ClusterDescription(_clusterId, _connectionMode, value, _servers);
         }
     }
 }

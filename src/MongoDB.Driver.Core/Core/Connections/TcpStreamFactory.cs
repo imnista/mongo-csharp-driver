@@ -1,4 +1,4 @@
-﻿/* Copyright 2013-2014 MongoDB Inc.
+/* Copyright 2013-present MongoDB Inc.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -14,7 +14,9 @@
 */
 
 using System;
+using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Net;
 using System.Net.Sockets;
 using System.Threading;
@@ -40,28 +42,181 @@ namespace MongoDB.Driver.Core.Connections
 
         public TcpStreamFactory(TcpStreamSettings settings)
         {
-            _settings = Ensure.IsNotNull(settings, "settings");
+            _settings = Ensure.IsNotNull(settings, nameof(settings));
         }
 
         // methods
+        public Stream CreateStream(EndPoint endPoint, CancellationToken cancellationToken)
+        {
+#if NETSTANDARD1_5 || NETSTANDARD1_6
+            // ugh... I know... but there isn't a non-async version of dns resolution
+            // in .NET Core
+            var resolved = ResolveEndPointsAsync(endPoint).GetAwaiter().GetResult();
+            for (int i = 0; i < resolved.Length; i++)
+            {
+                try
+                {
+                    var socket = CreateSocket(resolved[i]);
+                    Connect(socket, resolved[i], cancellationToken);
+                    return CreateNetworkStream(socket);
+                }
+                catch
+                {
+                    // if we have tried all of them and still failed,
+                    // then blow up.
+                    if (i == resolved.Length - 1)
+                    {
+                        throw;
+                    }
+                }
+            }
+
+            // we should never get here...
+            throw new InvalidOperationException("Unabled to resolve endpoint.");
+#else
+            var socket = CreateSocket(endPoint);
+            Connect(socket, endPoint, cancellationToken);
+            return CreateNetworkStream(socket);
+#endif
+        }
+
         public async Task<Stream> CreateStreamAsync(EndPoint endPoint, CancellationToken cancellationToken)
         {
-            var addressFamily = endPoint.AddressFamily;
-            if (addressFamily == AddressFamily.Unspecified || addressFamily == AddressFamily.Unknown)
+#if NETSTANDARD1_5 || NETSTANDARD1_6
+            var resolved = await ResolveEndPointsAsync(endPoint).ConfigureAwait(false);
+            for (int i = 0; i < resolved.Length; i++)
             {
-                addressFamily = _settings.AddressFamily;
+                try
+                {
+                    var socket = CreateSocket(resolved[i]);
+                    await ConnectAsync(socket, resolved[i], cancellationToken).ConfigureAwait(false);
+                    return CreateNetworkStream(socket);
+                }
+                catch
+                {
+                    // if we have tried all of them and still failed,
+                    // then blow up.
+                    if (i == resolved.Length - 1)
+                    {
+                        throw;
+                    }
+                }
             }
-            var socket = new Socket(addressFamily, SocketType.Stream, ProtocolType.Tcp);
+
+            // we should never get here...
+            throw new InvalidOperationException("Unabled to resolve endpoint.");
+#else
+            var socket = CreateSocket(endPoint);
             await ConnectAsync(socket, endPoint, cancellationToken).ConfigureAwait(false);
+            return CreateNetworkStream(socket);
+#endif
+        }
+
+        // non-public methods
+        private void ConfigureConnectedSocket(Socket socket)
+        {
             socket.NoDelay = true;
             socket.ReceiveBufferSize = _settings.ReceiveBufferSize;
             socket.SendBufferSize = _settings.SendBufferSize;
 
-            var socketConfigurator = _settings.SocketConfigurator;
-            if (socketConfigurator != null)
+            _settings.SocketConfigurator?.Invoke(socket);
+        }
+
+        private void Connect(Socket socket, EndPoint endPoint, CancellationToken cancellationToken)
+        {
+            var connected = false;
+            var cancelled = false;
+            var timedOut = false;
+
+            using (var registration = cancellationToken.Register(() => { if (!connected) { cancelled = true; try { socket.Dispose(); } catch { } } }))
+            using (var timer = new Timer(_ => { if (!connected) { timedOut = true; try { socket.Dispose(); } catch { } } }, null, _settings.ConnectTimeout, Timeout.InfiniteTimeSpan))
             {
-                socketConfigurator(socket);
+                try
+                {
+                    var dnsEndPoint = endPoint as DnsEndPoint;
+                    if (dnsEndPoint != null)
+                    {
+                        // mono doesn't support DnsEndPoint in its BeginConnect method.
+                        socket.Connect(dnsEndPoint.Host, dnsEndPoint.Port);
+                    }
+                    else
+                    {
+                        socket.Connect(endPoint);
+                    }
+                    connected = true;
+                    return;
+                }
+                catch
+                {
+                    if (!cancelled && !timedOut)
+                    {
+                        try { socket.Dispose(); } catch { }
+                        throw;
+                    }
+                }
             }
+
+            try { socket.Dispose(); } catch { }
+
+            cancellationToken.ThrowIfCancellationRequested();
+            if (timedOut)
+            {
+                var message = string.Format("Timed out connecting to {0}. Timeout was {1}.", endPoint, _settings.ConnectTimeout);
+                throw new TimeoutException(message);
+            }
+        }
+
+        private async Task ConnectAsync(Socket socket, EndPoint endPoint, CancellationToken cancellationToken)
+        {
+            var connected = false;
+            var cancelled = false;
+            var timedOut = false;
+
+            using (var registration = cancellationToken.Register(() => { if (!connected) { cancelled = true; try { socket.Dispose(); } catch { } } }))
+            using (var timer = new Timer(_ => { if (!connected) { timedOut = true; try { socket.Dispose(); } catch { } } }, null, _settings.ConnectTimeout, Timeout.InfiniteTimeSpan))
+            {
+                try
+                {
+                    var dnsEndPoint = endPoint as DnsEndPoint;
+#if NETSTANDARD1_5 || NETSTANDARD1_6
+                    await socket.ConnectAsync(endPoint).ConfigureAwait(false); // TODO: honor cancellationToken
+#else
+                    if (dnsEndPoint != null)
+                    {
+                        // mono doesn't support DnsEndPoint in its BeginConnect method.
+                        await Task.Factory.FromAsync(socket.BeginConnect(dnsEndPoint.Host, dnsEndPoint.Port, null, null), socket.EndConnect).ConfigureAwait(false);
+                    }
+                    else
+                    {
+                        await Task.Factory.FromAsync(socket.BeginConnect(endPoint, null, null), socket.EndConnect).ConfigureAwait(false);
+                    }
+#endif
+                    connected = true;
+                    return;
+                }
+                catch
+                {
+                    if (!cancelled && !timedOut)
+                    {
+                        try { socket.Dispose(); } catch { }
+                        throw;
+                    }
+                }
+            }
+
+            try { socket.Dispose(); } catch { }
+
+            cancellationToken.ThrowIfCancellationRequested();
+            if (timedOut)
+            {
+                var message = string.Format("Timed out connecting to {0}. Timeout was {1}.", endPoint, _settings.ConnectTimeout);
+                throw new TimeoutException(message);
+            }
+        }
+
+        private NetworkStream CreateNetworkStream(Socket socket)
+        {
+            ConfigureConnectedSocket(socket);
 
             var stream = new NetworkStream(socket, true);
 
@@ -86,44 +241,94 @@ namespace MongoDB.Driver.Core.Connections
             return stream;
         }
 
-        // non-public methods
-        private async Task ConnectAsync(Socket socket, EndPoint endPoint, CancellationToken cancellationToken)
+        private Socket CreateSocket(EndPoint endPoint)
         {
-            Task connectTask;
-            var dnsEndPoint = endPoint as DnsEndPoint;
-            if (dnsEndPoint != null)
+            var addressFamily = endPoint.AddressFamily;
+            if (addressFamily == AddressFamily.Unspecified || addressFamily == AddressFamily.Unknown)
             {
-                // mono doesn't support DnsEndPoint in its BeginConnect method.
-                connectTask = Task.Factory.FromAsync(socket.BeginConnect(dnsEndPoint.Host, dnsEndPoint.Port, null, null), socket.EndConnect);
-            }
-            else
-            {
-                connectTask = Task.Factory.FromAsync(socket.BeginConnect(endPoint, null, null), socket.EndConnect);
+                addressFamily = _settings.AddressFamily;
             }
 
-            if (_settings.ConnectTimeout == Timeout.InfiniteTimeSpan)
+            var socket = new Socket(addressFamily, SocketType.Stream, ProtocolType.Tcp);
+
+            // not all platforms support IOControl
+            try
             {
-                await connectTask.ConfigureAwait(false);
-                return;
-            }
-
-            using (var delayCancellationTokenSource = new CancellationTokenSource())
-            {
-                var delayTask = Task.Delay(_settings.ConnectTimeout, delayCancellationTokenSource.Token);
-
-                var completedTask = await Task.WhenAny(connectTask, delayTask).ConfigureAwait(false);
-                
-                // kill the delay timer as soon as possible
-                delayCancellationTokenSource.Cancel();
-
-                if (completedTask == delayTask && !socket.Connected)
+                var keepAliveValues = new KeepAliveValues
                 {
-                    socket.Dispose();
-                    var message = string.Format("Timed out connecting to {0}. Timeout was {1}.", endPoint, _settings.ConnectTimeout);
-                    throw new TimeoutException(message);
+                    OnOff = 1,
+                    KeepAliveTime = 300000, // 300 seconds in milliseconds
+                    KeepAliveInterval = 10000 // 10 seconds in milliseconds
+                };
+                socket.IOControl(IOControlCode.KeepAliveValues, keepAliveValues.ToBytes(), null);
+            }
+            catch (PlatformNotSupportedException)
+            {
+                // most platforms should support this call to SetSocketOption, but just in case call it in a try/catch also
+                try
+                {
+                    socket.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.KeepAlive, true);
+                }
+                catch (PlatformNotSupportedException)
+                {
+                    // ignore PlatformNotSupportedException
+                }
+            }
+
+            return socket;
+        }
+
+        private async Task<EndPoint[]> ResolveEndPointsAsync(EndPoint initial)
+        {
+            var dnsInitial = initial as DnsEndPoint;
+            if (dnsInitial == null)
+            {
+                return new[] { initial };
+            }
+
+            IPAddress address;
+            if (IPAddress.TryParse(dnsInitial.Host, out address))
+            {
+                return new[] { new IPEndPoint(address, dnsInitial.Port) };
+            }
+
+            var preferred = initial.AddressFamily;
+            if (preferred == AddressFamily.Unspecified || preferred == AddressFamily.Unknown)
+            {
+                preferred = _settings.AddressFamily;
+            }
+
+            return (await Dns.GetHostAddressesAsync(dnsInitial.Host).ConfigureAwait(false))
+                .Select(x => new IPEndPoint(x, dnsInitial.Port))
+                .OrderBy(x => x, new PreferredAddressFamilyComparer(preferred))
+                .ToArray();
+        }
+
+        private class PreferredAddressFamilyComparer : IComparer<EndPoint>
+        {
+            private readonly AddressFamily _preferred;
+
+            public PreferredAddressFamilyComparer(AddressFamily preferred)
+            {
+                _preferred = preferred;
+            }
+
+            public int Compare(EndPoint x, EndPoint y)
+            {
+                if (x.AddressFamily == y.AddressFamily)
+                {
+                    return 0;
+                }
+                if (x.AddressFamily == _preferred)
+                {
+                    return -1;
+                }
+                else if (y.AddressFamily == _preferred)
+                {
+                    return 1;
                 }
 
-                await connectTask.ConfigureAwait(false);
+                return 0;
             }
         }
     }

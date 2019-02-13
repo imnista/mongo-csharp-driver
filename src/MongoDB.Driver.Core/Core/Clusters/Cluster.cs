@@ -1,4 +1,4 @@
-﻿/* Copyright 2013-2014 MongoDB Inc.
+/* Copyright 2013-present MongoDB Inc.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -15,12 +15,15 @@
 
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using System.Net;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using MongoDB.Bson;
 using MongoDB.Driver.Core.Async;
+using MongoDB.Driver.Core.Bindings;
 using MongoDB.Driver.Core.Clusters.ServerSelectors;
 using MongoDB.Driver.Core.Configuration;
 using MongoDB.Driver.Core.Events;
@@ -37,36 +40,67 @@ namespace MongoDB.Driver.Core.Clusters
         #region static
         // static fields
         private static readonly TimeSpan __minHeartbeatInterval = TimeSpan.FromMilliseconds(500);
-        private static readonly Range<int> __supportedWireVersionRange = new Range<int>(0, 3);
+        private static readonly Range<int> __supportedWireVersionRange = new Range<int>(2, 6);
+        private static readonly SemanticVersion __minSupportedServerVersion = new SemanticVersion(2, 6, 0);
         private static readonly IServerSelector __randomServerSelector = new RandomServerSelector();
+
+        // static properties
+        /// <summary>
+        /// Gets the minimum supported server version.
+        /// </summary>
+        /// <value>
+        /// The minimum supported server version
+        /// </value>
+        public static SemanticVersion MinSupportedServerVersion => __minSupportedServerVersion;
+
+        /// <summary>
+        /// Gets the supported wire version range.
+        /// </summary>
+        /// <value>
+        /// The supported wire version range.
+        /// </value>
+        public static Range<int> SupportedWireVersionRange => __supportedWireVersionRange;
         #endregion
 
         // fields
+        private readonly IClusterClock _clusterClock = new ClusterClock();
         private readonly ClusterId _clusterId;
         private ClusterDescription _description;
         private TaskCompletionSource<bool> _descriptionChangedTaskCompletionSource;
         private readonly object _descriptionLock = new object();
-        private readonly IClusterListener _listener;
         private Timer _rapidHeartbeatTimer;
         private readonly object _serverSelectionWaitQueueLock = new object();
         private int _serverSelectionWaitQueueSize;
         private readonly IClusterableServerFactory _serverFactory;
+        private readonly ICoreServerSessionPool _serverSessionPool;
         private readonly ClusterSettings _settings;
         private readonly InterlockedInt32 _state;
 
+        private readonly Action<ClusterDescriptionChangedEvent> _descriptionChangedEventHandler;
+        private readonly Action<ClusterSelectingServerEvent> _selectingServerEventHandler;
+        private readonly Action<ClusterSelectedServerEvent> _selectedServerEventHandler;
+        private readonly Action<ClusterSelectingServerFailedEvent> _selectingServerFailedEventHandler;
+
         // constructors
-        protected Cluster(ClusterSettings settings, IClusterableServerFactory serverFactory, IClusterListener listener)
+        protected Cluster(ClusterSettings settings, IClusterableServerFactory serverFactory, IEventSubscriber eventSubscriber)
         {
-            _settings = Ensure.IsNotNull(settings, "settings");
-            _serverFactory = Ensure.IsNotNull(serverFactory, "serverFactory");
-            _listener = listener;
+            _settings = Ensure.IsNotNull(settings, nameof(settings));
+            _serverFactory = Ensure.IsNotNull(serverFactory, nameof(serverFactory));
+            Ensure.IsNotNull(eventSubscriber, nameof(eventSubscriber));
             _state = new InterlockedInt32(State.Initial);
 
             _clusterId = new ClusterId();
-            _description = ClusterDescription.CreateInitial(_clusterId, _settings.ConnectionMode.ToClusterType());
+            _description = ClusterDescription.CreateInitial(_clusterId, _settings.ConnectionMode);
             _descriptionChangedTaskCompletionSource = new TaskCompletionSource<bool>();
 
             _rapidHeartbeatTimer = new Timer(RapidHeartbeatTimerCallback, null, Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
+
+            eventSubscriber.TryGetEventHandler(out _descriptionChangedEventHandler);
+            eventSubscriber.TryGetEventHandler(out _selectingServerEventHandler);
+            eventSubscriber.TryGetEventHandler(out _selectedServerEventHandler);
+            eventSubscriber.TryGetEventHandler(out _selectingServerFailedEventHandler);
+
+            _serverSessionPool = new CoreServerSessionPool(this);
         }
 
         // events
@@ -89,20 +123,20 @@ namespace MongoDB.Driver.Core.Clusters
             }
         }
 
-        protected IClusterListener Listener
-        {
-            get { return _listener; }
-        }
-
         public ClusterSettings Settings
         {
             get { return _settings; }
         }
 
         // methods
+        public ICoreServerSession AcquireServerSession()
+        {
+            return _serverSessionPool.AcquireSession();
+        }
+
         protected IClusterableServer CreateServer(EndPoint endPoint)
         {
-            return _serverFactory.CreateServer(_clusterId, endPoint);
+            return _serverFactory.CreateServer(_clusterId, _clusterClock, endPoint);
         }
 
         public void Dispose()
@@ -117,6 +151,7 @@ namespace MongoDB.Driver.Core.Clusters
             {
                 var newClusterDescription = new ClusterDescription(
                     _clusterId,
+                    _description.ConnectionMode,
                     ClusterType.Unknown,
                     Enumerable.Empty<ServerDescription>());
 
@@ -177,9 +212,9 @@ namespace MongoDB.Driver.Core.Clusters
 
         protected void OnDescriptionChanged(ClusterDescription oldDescription, ClusterDescription newDescription)
         {
-            if (_listener != null)
+            if (_descriptionChangedEventHandler != null)
             {
-                _listener.ClusterAfterDescriptionChanged(new ClusterAfterDescriptionChangedEvent(oldDescription, newDescription));
+                _descriptionChangedEventHandler(new ClusterDescriptionChangedEvent(oldDescription, newDescription));
             }
 
             var handler = DescriptionChanged;
@@ -190,89 +225,70 @@ namespace MongoDB.Driver.Core.Clusters
             }
         }
 
+        public IServer SelectServer(IServerSelector selector, CancellationToken cancellationToken)
+        {
+            ThrowIfDisposedOrNotOpen();
+            Ensure.IsNotNull(selector, nameof(selector));
+
+            using (var helper = new SelectServerHelper(this, selector))
+            {
+                try
+                {
+                    while (true)
+                    {
+                        var server = helper.SelectServer();
+                        if (server != null)
+                        {
+                            return server;
+                        }
+
+                        helper.WaitingForDescriptionToChange();
+                        WaitForDescriptionChanged(helper.Selector, helper.Description, helper.DescriptionChangedTask, helper.TimeoutRemaining, cancellationToken);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    helper.HandleException(ex);
+                    throw;
+                }
+            }
+        }
+
         public async Task<IServer> SelectServerAsync(IServerSelector selector, CancellationToken cancellationToken)
         {
             ThrowIfDisposedOrNotOpen();
-            Ensure.IsNotNull(selector, "selector");
+            Ensure.IsNotNull(selector, nameof(selector));
 
-            var timeoutAt = DateTime.UtcNow + _settings.ServerSelectionTimeout;
-
-            var serverSelectionWaitQueueEntered = false;
-
-            if (_settings.PreServerSelector != null || _settings.PostServerSelector != null)
+            using (var helper = new SelectServerHelper(this, selector))
             {
-                var allSelectors = new List<IServerSelector>();
-                if (_settings.PreServerSelector != null)
+                try
                 {
-                    allSelectors.Add(_settings.PreServerSelector);
-                }
-
-                allSelectors.Add(selector);
-
-                if (_settings.PostServerSelector != null)
-                {
-                    allSelectors.Add(_settings.PostServerSelector);
-                }
-
-                selector = new CompositeServerSelector(allSelectors);
-            }
-
-            try
-            {
-                while (true)
-                {
-                    cancellationToken.ThrowIfCancellationRequested();
-
-                    Task descriptionChangedTask;
-                    ClusterDescription description;
-                    lock (_descriptionLock)
+                    while (true)
                     {
-                        descriptionChangedTask = _descriptionChangedTaskCompletionSource.Task;
-                        description = _description;
-                    }
-
-                    ThrowIfIncompatible(description);
-
-                    var connectedServers = description.Servers.Where(s => s.State == ServerState.Connected);
-                    var selectedServers = selector.SelectServers(description, connectedServers).ToList();
-
-                    while (selectedServers.Count > 0)
-                    {
-                        var server = selectedServers.Count == 1 ?
-                            selectedServers[0] :
-                            __randomServerSelector.SelectServers(description, selectedServers).Single();
-
-                        IClusterableServer selectedServer;
-                        if (TryGetServer(server.EndPoint, out selectedServer))
+                        var server = helper.SelectServer();
+                        if (server != null)
                         {
-                            return selectedServer;
+                            return server;
                         }
 
-                        selectedServers.Remove(server);
+                        helper.WaitingForDescriptionToChange();
+                        await WaitForDescriptionChangedAsync(helper.Selector, helper.Description, helper.DescriptionChangedTask, helper.TimeoutRemaining, cancellationToken).ConfigureAwait(false);
                     }
-
-                    if (!serverSelectionWaitQueueEntered)
-                    {
-                        EnterServerSelectionWaitQueue();
-                        serverSelectionWaitQueueEntered = true;
-                    }
-
-                    var timeoutRemaining = timeoutAt - DateTime.UtcNow;
-                    if (timeoutRemaining <= TimeSpan.Zero)
-                    {
-                        ThrowTimeoutException(selector, description);
-                    }
-
-                    await WaitForDescriptionChangedAsync(selector, description, descriptionChangedTask, timeoutRemaining, cancellationToken).ConfigureAwait(false);
                 }
-            }
-            finally
-            {
-                if (serverSelectionWaitQueueEntered)
+                catch (Exception ex)
                 {
-                    ExitServerSelectionWaitQueue();
+                    helper.HandleException(ex);
+                    throw;
                 }
             }
+        }
+
+        public ICoreSessionHandle StartSession(CoreSessionOptions options)
+        {
+            options = options ?? new CoreSessionOptions();
+            var serverSession = AcquireServerSession();
+            var session = new CoreSession(this, serverSession, options);
+            return new CoreSessionHandle(session);
         }
 
         protected abstract bool TryGetServer(EndPoint endPoint, out IClusterableServer server);
@@ -313,17 +329,6 @@ namespace MongoDB.Driver.Core.Clusters
             }
         }
 
-        private void ThrowIfIncompatible(ClusterDescription description)
-        {
-            var isIncompatible = description.Servers
-                .Any(sd => sd.WireVersionRange != null && !sd.WireVersionRange.Overlaps(__supportedWireVersionRange));
-
-            if (isIncompatible)
-            {
-                throw new MongoIncompatibleDriverException(description);
-            }
-        }
-
         private void ThrowIfDisposedOrNotOpen()
         {
             if (_state.Value != State.Open)
@@ -333,27 +338,21 @@ namespace MongoDB.Driver.Core.Clusters
             }
         }
 
+        private void WaitForDescriptionChanged(IServerSelector selector, ClusterDescription description, Task descriptionChangedTask, TimeSpan timeout, CancellationToken cancellationToken)
+        {
+            using (var helper = new WaitForDescriptionChangedHelper(this, selector, description, descriptionChangedTask, timeout, cancellationToken))
+            {
+                var index = Task.WaitAny(helper.Tasks);
+                helper.HandleCompletedTask(helper.Tasks[index]);
+            }
+        }
+
         private async Task WaitForDescriptionChangedAsync(IServerSelector selector, ClusterDescription description, Task descriptionChangedTask, TimeSpan timeout, CancellationToken cancellationToken)
         {
-            var cancellationTaskCompletionSource = new TaskCompletionSource<bool>();
-            using (cancellationToken.Register(() => cancellationTaskCompletionSource.TrySetCanceled()))
-            using (var timeoutCancellationTokenSource = new CancellationTokenSource())
+            using (var helper = new WaitForDescriptionChangedHelper(this, selector, description, descriptionChangedTask, timeout, cancellationToken))
             {
-                var timeoutTask = Task.Delay(timeout, timeoutCancellationTokenSource.Token);
-                var completedTask = await Task.WhenAny(descriptionChangedTask, timeoutTask, cancellationTaskCompletionSource.Task).ConfigureAwait(false);
-
-                if (completedTask == timeoutTask)
-                {
-                    ThrowTimeoutException(selector, description);
-                }
-                timeoutCancellationTokenSource.Cancel();
-
-                if (completedTask == cancellationTaskCompletionSource.Task)
-                {
-                    cancellationToken.ThrowIfCancellationRequested();
-                }
-
-                await descriptionChangedTask.ConfigureAwait(false); // propagate exceptions
+                var completedTask  = await Task.WhenAny(helper.Tasks).ConfigureAwait(false);
+                helper.HandleCompletedTask(completedTask);
             }
         }
 
@@ -364,6 +363,221 @@ namespace MongoDB.Driver.Core.Clusters
         }
 
         // nested classes
+        private class SelectServerHelper : IDisposable
+        {
+            private readonly Cluster _cluster;
+            private ClusterDescription _description;
+            private Task _descriptionChangedTask;
+            private bool _serverSelectionWaitQueueEntered;
+            private readonly IServerSelector _selector;
+            private readonly Stopwatch _stopwatch;
+            private readonly DateTime _timeoutAt;
+
+            public SelectServerHelper(Cluster cluster, IServerSelector selector)
+            {
+                _cluster = cluster;
+                _selector = DecorateSelector(selector);
+                _stopwatch = Stopwatch.StartNew();
+                _timeoutAt = DateTime.UtcNow + _cluster.Settings.ServerSelectionTimeout;
+            }
+
+            public ClusterDescription Description
+            {
+                get { return _description; }
+            }
+
+            public Task DescriptionChangedTask
+            {
+                get { return _descriptionChangedTask; }
+            }
+
+            public IServerSelector Selector
+            {
+                get { return _selector; }
+            }
+
+            public TimeSpan TimeoutRemaining
+            {
+                get { return _timeoutAt - DateTime.UtcNow; }
+            }
+
+            public void Dispose()
+            {
+                if (_serverSelectionWaitQueueEntered)
+                {
+                    _cluster.ExitServerSelectionWaitQueue();
+                }
+            }
+
+            public void HandleException(Exception exception)
+            {
+                var selectingServerFailedEventHandler = _cluster._selectingServerFailedEventHandler;
+                if (selectingServerFailedEventHandler != null)
+                {
+                    selectingServerFailedEventHandler(new ClusterSelectingServerFailedEvent(
+                        _description,
+                        _selector,
+                        exception,
+                        EventContext.OperationId));
+                }
+            }
+
+            public IServer SelectServer()
+            {
+                lock (_cluster._descriptionLock)
+                {
+                    _descriptionChangedTask = _cluster._descriptionChangedTaskCompletionSource.Task;
+                    _description = _cluster._description;
+                }
+
+                if (!_serverSelectionWaitQueueEntered)
+                {
+                    var selectingServerEventHandler = _cluster._selectingServerEventHandler;
+                    if (selectingServerEventHandler != null)
+                    {
+                        // this is our first time through...
+                        selectingServerEventHandler(new ClusterSelectingServerEvent(
+                            _description,
+                            _selector,
+                            EventContext.OperationId));
+                    }
+                }
+
+                MongoIncompatibleDriverException.ThrowIfNotSupported(_description);
+
+                var connectedServers = _description.Servers.Where(s => s.State == ServerState.Connected);
+                var selectedServers = _selector.SelectServers(_description, connectedServers).ToList();
+
+                while (selectedServers.Count > 0)
+                {
+                    var server = selectedServers.Count == 1 ?
+                        selectedServers[0] :
+                        __randomServerSelector.SelectServers(_description, selectedServers).Single();
+
+                    IClusterableServer selectedServer;
+                    if (_cluster.TryGetServer(server.EndPoint, out selectedServer))
+                    {
+                        _stopwatch.Stop();
+                        var selectedServerEventHandler = _cluster._selectedServerEventHandler;
+                        if (selectedServerEventHandler != null)
+                        {
+                            selectedServerEventHandler(new ClusterSelectedServerEvent(
+                                _description,
+                                _selector,
+                                server,
+                                _stopwatch.Elapsed,
+                                EventContext.OperationId));
+                        }
+                        return selectedServer;
+                    }
+
+                    selectedServers.Remove(server);
+                }
+
+                return null;
+            }
+
+            public void WaitingForDescriptionToChange()
+            {
+                if (!_serverSelectionWaitQueueEntered)
+                {
+                    _cluster.EnterServerSelectionWaitQueue();
+                    _serverSelectionWaitQueueEntered = true;
+                }
+
+                var timeoutRemaining = _timeoutAt - DateTime.UtcNow;
+                if (timeoutRemaining <= TimeSpan.Zero)
+                {
+                    _cluster.ThrowTimeoutException(_selector, _description);
+                }
+            }
+
+            private IServerSelector DecorateSelector(IServerSelector selector)
+            {
+                var settings = _cluster.Settings;
+                if (settings.PreServerSelector != null || settings.PostServerSelector != null)
+                {
+                    var allSelectors = new List<IServerSelector>();
+                    if (settings.PreServerSelector != null)
+                    {
+                        allSelectors.Add(settings.PreServerSelector);
+                    }
+
+                    allSelectors.Add(selector);
+
+                    if (settings.PostServerSelector != null)
+                    {
+                        allSelectors.Add(settings.PostServerSelector);
+                    }
+
+                    return new CompositeServerSelector(allSelectors);
+                }
+
+                return selector;
+            }
+        }
+
+        private sealed class WaitForDescriptionChangedHelper : IDisposable
+        {
+            private readonly CancellationToken _cancellationToken;
+            private readonly TaskCompletionSource<bool> _cancellationTaskCompletionSource;
+            private readonly CancellationTokenRegistration _cancellationTokenRegistration;
+            private readonly Cluster _cluster;
+            private readonly ClusterDescription _description;
+            private readonly Task _descriptionChangedTask;
+            private readonly IServerSelector _selector;
+            private readonly CancellationTokenSource _timeoutCancellationTokenSource;
+            private readonly Task _timeoutTask;
+
+            public  WaitForDescriptionChangedHelper(Cluster cluster, IServerSelector selector, ClusterDescription description, Task descriptionChangedTask , TimeSpan timeout, CancellationToken cancellationToken)
+            {
+                _cluster = cluster;
+                _description = description;
+                _selector = selector;
+                _descriptionChangedTask = descriptionChangedTask;
+                _cancellationToken = cancellationToken;
+                _cancellationTaskCompletionSource = new TaskCompletionSource<bool>();
+                _cancellationTokenRegistration = cancellationToken.Register(() => _cancellationTaskCompletionSource.TrySetCanceled());
+                _timeoutCancellationTokenSource = new CancellationTokenSource();
+                _timeoutTask = Task.Delay(timeout, _timeoutCancellationTokenSource.Token);
+            }
+
+            public Task[] Tasks
+            {
+                get
+                {
+                    return new Task[]
+                    {
+                        _descriptionChangedTask,
+                        _timeoutTask,
+                        _cancellationTaskCompletionSource.Task
+                    };
+                }
+            }
+
+            public void Dispose()
+            {
+                _cancellationTokenRegistration.Dispose();
+                _timeoutCancellationTokenSource.Dispose();
+            }
+
+            public void HandleCompletedTask(Task completedTask)
+            {
+                if (completedTask == _timeoutTask)
+                {
+                    _cluster.ThrowTimeoutException(_selector, _description);
+                }
+                _timeoutCancellationTokenSource.Cancel();
+
+                if (completedTask == _cancellationTaskCompletionSource.Task)
+                {
+                    _cancellationToken.ThrowIfCancellationRequested();
+                }
+
+                _descriptionChangedTask.GetAwaiter().GetResult(); // propagate exceptions
+            }
+        }
+
         private static class State
         {
             public const int Initial = 0;

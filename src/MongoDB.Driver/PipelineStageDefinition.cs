@@ -1,4 +1,4 @@
-﻿/* Copyright 2010-2014 MongoDB Inc.
+/* Copyright 2010-present MongoDB Inc.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -62,9 +62,9 @@ namespace MongoDB.Driver
         /// <param name="outputSerializer">The output serializer.</param>
         public RenderedPipelineStageDefinition(string operatorName, BsonDocument document, IBsonSerializer<TOutput> outputSerializer)
         {
-            _operatorName = Ensure.IsNotNull(operatorName, "operatorName");
-            _document = Ensure.IsNotNull(document, "document");
-            _outputSerializer = Ensure.IsNotNull(outputSerializer, "outputSerializer");
+            _operatorName = Ensure.IsNotNull(operatorName, nameof(operatorName));
+            _document = Ensure.IsNotNull(document, nameof(document));
+            _outputSerializer = Ensure.IsNotNull(outputSerializer, nameof(outputSerializer));
         }
 
         /// <inheritdoc />
@@ -121,6 +121,16 @@ namespace MongoDB.Driver
         /// <param name="serializerRegistry">The serializer registry.</param>
         /// <returns>An <see cref="IRenderedPipelineStageDefinition" /></returns>
         IRenderedPipelineStageDefinition Render(IBsonSerializer inputSerializer, IBsonSerializerRegistry serializerRegistry);
+
+        /// <summary>
+        /// Returns a <see cref="System.String" /> that represents this instance.
+        /// </summary>
+        /// <param name="inputSerializer">The input serializer.</param>
+        /// <param name="serializerRegistry">The serializer registry.</param>
+        /// <returns>
+        /// A <see cref="System.String" /> that represents this instance.
+        /// </returns>
+        string ToString(IBsonSerializer inputSerializer, IBsonSerializerRegistry serializerRegistry);
     }
 
     /// <summary>
@@ -133,7 +143,7 @@ namespace MongoDB.Driver
         /// <summary>
         /// Gets the type of the input.
         /// </summary>
-        Type IPipelineStageDefinition.InputType
+        public Type InputType
         {
             get { return typeof(TInput); }
         }
@@ -144,7 +154,7 @@ namespace MongoDB.Driver
         /// <summary>
         /// Gets the type of the output.
         /// </summary>
-        Type IPipelineStageDefinition.OutputType
+        public Type OutputType
         {
             get { return typeof(TOutput); }
         }
@@ -156,6 +166,33 @@ namespace MongoDB.Driver
         /// <param name="serializerRegistry">The serializer registry.</param>
         /// <returns>A <see cref="RenderedPipelineStageDefinition{TOutput}" /></returns>
         public abstract RenderedPipelineStageDefinition<TOutput> Render(IBsonSerializer<TInput> inputSerializer, IBsonSerializerRegistry serializerRegistry);
+
+        /// <inheritdoc/>
+        public override string ToString()
+        {
+            var serializerRegistry = BsonSerializer.SerializerRegistry;
+            var inputSerializer = serializerRegistry.GetSerializer<TInput>();
+            return ToString(inputSerializer, serializerRegistry);
+        }
+
+        /// <summary>
+        /// Returns a <see cref="System.String" /> that represents this instance.
+        /// </summary>
+        /// <param name="inputSerializer">The input serializer.</param>
+        /// <param name="serializerRegistry">The serializer registry.</param>
+        /// <returns>
+        /// A <see cref="System.String" /> that represents this instance.
+        /// </returns>
+        public string ToString(IBsonSerializer<TInput> inputSerializer, IBsonSerializerRegistry serializerRegistry)
+        {
+            var renderedStage = Render(inputSerializer, serializerRegistry);
+            return renderedStage.Document.ToJson();
+        }
+
+        string IPipelineStageDefinition.ToString(IBsonSerializer inputSerializer, IBsonSerializerRegistry serializerRegistry)
+        {
+            return ToString((IBsonSerializer<TInput>)inputSerializer, serializerRegistry);
+        }
 
         /// <summary>
         /// Performs an implicit conversion from <see cref="BsonDocument"/> to <see cref="PipelineStageDefinition{TInput, TOutput}"/>.
@@ -215,7 +252,7 @@ namespace MongoDB.Driver
         /// <param name="outputSerializer">The output serializer.</param>
         public BsonDocumentPipelineStageDefinition(BsonDocument document, IBsonSerializer<TOutput> outputSerializer = null)
         {
-            _document = Ensure.IsNotNull(document, "document");
+            _document = Ensure.IsNotNull(document, nameof(document));
             _outputSerializer = outputSerializer;
         }
 
@@ -253,7 +290,7 @@ namespace MongoDB.Driver
         /// <param name="outputSerializer">The output serializer.</param>
         public JsonPipelineStageDefinition(string json, IBsonSerializer<TOutput> outputSerializer = null)
         {
-            _json = Ensure.IsNotNullOrEmpty(json, "json");
+            _json = Ensure.IsNotNullOrEmpty(json, nameof(json));
             _outputSerializer = outputSerializer;
 
             _document = BsonDocument.Parse(json);

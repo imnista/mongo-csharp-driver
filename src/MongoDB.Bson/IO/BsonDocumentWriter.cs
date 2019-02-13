@@ -1,4 +1,4 @@
-﻿/* Copyright 2010-2014 MongoDB Inc.
+﻿/* Copyright 2010-present MongoDB Inc.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -62,6 +62,9 @@ namespace MongoDB.Bson.IO
         {
             get { return _document; }
         }
+
+        /// <inheritdoc />
+        public override long Position => 0L;
 
         // public methods
         /// <summary>
@@ -143,6 +146,19 @@ namespace MongoDB.Bson.IO
             }
 
             WriteValue(new BsonDateTime(value));
+            State = GetNextState();
+        }
+
+        /// <inheritdoc />
+        public override void WriteDecimal128(Decimal128 value)
+        {
+            if (Disposed) { throw new ObjectDisposedException("BsonDocumentWriter"); }
+            if (State != BsonWriterState.Value)
+            {
+                ThrowInvalidState(nameof(WriteDecimal128), BsonWriterState.Value);
+            }
+
+            WriteValue(new BsonDecimal128(value));
             State = GetNextState();
         }
 

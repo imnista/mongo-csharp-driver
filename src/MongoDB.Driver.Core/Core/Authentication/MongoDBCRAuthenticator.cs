@@ -1,4 +1,4 @@
-﻿/* Copyright 2013-2014 MongoDB Inc.
+/* Copyright 2013-present MongoDB Inc.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -30,7 +30,9 @@ namespace MongoDB.Driver.Core.Authentication
 {
     /// <summary>
     /// A MONGODB-CR authenticator.
+    /// This authenticator was replaced by <see cref="ScramSha1Authenticator"/> in MongoDB 3.0, and is now deprecated.
     /// </summary>
+    [Obsolete("This authenticator was replaced by ScramSha1Authenticator in MongoDB 3.0, and is now deprecated.")]
     public sealed class MongoDBCRAuthenticator : IAuthenticator
     {
         // static properties
@@ -55,7 +57,7 @@ namespace MongoDB.Driver.Core.Authentication
         /// <param name="credential">The credential.</param>
         public MongoDBCRAuthenticator(UsernamePasswordCredential credential)
         {
-            _credential = Ensure.IsNotNull(credential, "credential");
+            _credential = Ensure.IsNotNull(credential, nameof(credential));
         }
 
         // properties
@@ -65,40 +67,55 @@ namespace MongoDB.Driver.Core.Authentication
             get { return MechanismName; }
         }
 
-        // methods
+        // public methods
         /// <inheritdoc/>
-        public async Task AuthenticateAsync(IConnection connection, ConnectionDescription description, CancellationToken cancellationToken)
+        public void Authenticate(IConnection connection, ConnectionDescription description, CancellationToken cancellationToken)
         {
-            Ensure.IsNotNull(connection, "connection");
-            Ensure.IsNotNull(description, "description");
+            Ensure.IsNotNull(connection, nameof(connection));
+            Ensure.IsNotNull(description, nameof(description));
 
             try
             {
-                var nonce = await GetNonceAsync(connection, cancellationToken).ConfigureAwait(false);
-                await AuthenticateAsync(connection, nonce, cancellationToken).ConfigureAwait(false);
+                var getNonceProtocol = CreateGetNonceProtocol();
+                var getNonceReply = getNonceProtocol.Execute(connection, cancellationToken);
+                var authenticateProtocol = CreateAuthenticateProtocol(getNonceReply);
+                authenticateProtocol.Execute(connection, cancellationToken);
             }
-            catch(MongoCommandException ex)
+            catch (MongoCommandException ex)
             {
-                var message = string.Format("Unable to authenticate username '{0}' on database '{1}'.", _credential.Username, _credential.Source);
-                throw new MongoAuthenticationException(connection.ConnectionId, message, ex);
+                throw CreateException(connection, ex);
             }
         }
 
-        private async Task<string> GetNonceAsync(IConnection connection, CancellationToken cancellationToken)
+        /// <inheritdoc/>
+        public async Task AuthenticateAsync(IConnection connection, ConnectionDescription description, CancellationToken cancellationToken)
         {
-            var command = new BsonDocument("getnonce", 1);
-            var protocol = new CommandWireProtocol<BsonDocument>(
-                new DatabaseNamespace(_credential.Source),
-                command,
-                true,
-                BsonDocumentSerializer.Instance,
-                null);
-            var document = await protocol.ExecuteAsync(connection, cancellationToken).ConfigureAwait(false);
-            return (string)document["nonce"];
+            Ensure.IsNotNull(connection, nameof(connection));
+            Ensure.IsNotNull(description, nameof(description));
+
+            try
+            {
+                var getNonceProtocol = CreateGetNonceProtocol();
+                var getNonceReply = await getNonceProtocol.ExecuteAsync(connection, cancellationToken).ConfigureAwait(false);
+                var authenticateProtocol =  CreateAuthenticateProtocol(getNonceReply);
+                await authenticateProtocol.ExecuteAsync(connection, cancellationToken).ConfigureAwait(false);
+            }
+            catch (MongoCommandException ex)
+            {
+                throw CreateException(connection, ex);
+            }
         }
 
-        private async Task AuthenticateAsync(IConnection connection, string nonce, CancellationToken cancellationToken)
+        /// <inheritdoc/>
+        public BsonDocument CustomizeInitialIsMasterCommand(BsonDocument isMasterCommand)
         {
+            return isMasterCommand;
+        }
+
+        // private methods
+        private CommandWireProtocol<BsonDocument> CreateAuthenticateProtocol(BsonDocument getNonceReply)
+        {
+            var nonce = getNonceReply["nonce"].AsString;
             var command = new BsonDocument
             {
                 { "authenticate", 1 },
@@ -112,7 +129,25 @@ namespace MongoDB.Driver.Core.Authentication
                 true,
                 BsonDocumentSerializer.Instance,
                 null);
-            await protocol.ExecuteAsync(connection, cancellationToken).ConfigureAwait(false);
+            return protocol;
+        }
+
+        private MongoAuthenticationException CreateException(IConnection connection, Exception ex)
+        {
+            var message = string.Format("Unable to authenticate username '{0}' on database '{1}'.", _credential.Username, _credential.Source);
+            return new MongoAuthenticationException(connection.ConnectionId, message, ex);
+        }
+
+        private CommandWireProtocol<BsonDocument> CreateGetNonceProtocol()
+        {
+            var command = new BsonDocument("getnonce", 1);
+            var protocol = new CommandWireProtocol<BsonDocument>(
+                new DatabaseNamespace(_credential.Source),
+                command,
+                true,
+                BsonDocumentSerializer.Instance,
+                null);
+            return protocol;
         }
 
         private string CreateKey(string username, SecureString password, string nonce)
@@ -121,8 +156,8 @@ namespace MongoDB.Driver.Core.Authentication
             using (var md5 = MD5.Create())
             {
                 var bytes = Utf8Encodings.Strict.GetBytes(nonce + username + passwordDigest);
-                bytes = md5.ComputeHash(bytes);
-                return BsonUtils.ToHexString(bytes);
+                var hash = md5.ComputeHash(bytes);
+                return BsonUtils.ToHexString(hash);
             }
         }
     }

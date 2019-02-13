@@ -1,4 +1,4 @@
-﻿/* Copyright 2010-2014 MongoDB Inc.
+﻿/* Copyright 2010-present MongoDB Inc.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -20,14 +20,16 @@ namespace MongoDB.Bson
     /// <summary>
     /// Represents a BSON ObjectId value (see also ObjectId).
     /// </summary>
+#if NET452
     [Serializable]
+#endif
     public class BsonObjectId : BsonValue, IComparable<BsonObjectId>, IEquatable<BsonObjectId>
     {
         // private static fields
         private static BsonObjectId __emptyInstance = new BsonObjectId(ObjectId.Empty);
 
         // private fields
-        private ObjectId _value;
+        private readonly ObjectId _value;
 
         // constructors
         /// <summary>
@@ -357,6 +359,13 @@ namespace MongoDB.Bson
         /// </summary>
         /// <returns>A string representation of the value.</returns>
         public override string ToString()
+        {
+            return _value.ToString();
+        }
+
+        // protected methods
+        /// <inheritdoc/>
+        protected override string IConvertibleToStringImplementation(IFormatProvider provider)
         {
             return _value.ToString();
         }

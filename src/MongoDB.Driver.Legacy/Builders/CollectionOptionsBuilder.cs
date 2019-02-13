@@ -1,4 +1,4 @@
-﻿/* Copyright 2010-2014 MongoDB Inc.
+/* Copyright 2010-present MongoDB Inc.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -41,6 +41,7 @@ namespace MongoDB.Driver.Builders
         /// </summary>
         /// <param name="value">Whether to automatically create an index on the _id element.</param>
         /// <returns>The builder (so method calls can be chained).</returns>
+        [Obsolete("AutoIndexId has been deprecated since server version 3.2.")]
         public static CollectionOptionsBuilder SetAutoIndexId(bool value)
         {
             return new CollectionOptionsBuilder().SetAutoIndexId(value);
@@ -54,6 +55,26 @@ namespace MongoDB.Driver.Builders
         public static CollectionOptionsBuilder SetCapped(bool value)
         {
             return new CollectionOptionsBuilder().SetCapped(value);
+        }
+
+        /// <summary>
+        /// Sets the collation.
+        /// </summary>
+        /// <param name="value">The collation.</param>
+        /// <returns>The builder (so method calls can be chained).</returns>
+        public static CollectionOptionsBuilder SetCollation(Collation value)
+        {
+            return new CollectionOptionsBuilder().SetCollation(value);
+        }
+
+        /// <summary>
+        /// Sets the index options defaults.
+        /// </summary>
+        /// <param name="value">The value.</param>
+        /// <returns>The builder (so method calls can be chained).</returns>
+        public static CollectionOptionsBuilder SetIndexOptionDefaults(IndexOptionDefaults value)
+        {
+            return new CollectionOptionsBuilder().SetIndexOptionDefaults(value);
         }
 
         /// <summary>
@@ -85,12 +106,43 @@ namespace MongoDB.Driver.Builders
         {
             return new CollectionOptionsBuilder().SetStorageEngineOptions(value);
         }
+        /// <summary>
+        /// Sets the validation action.
+        /// </summary>
+        /// <param name="validationAction">The validation action.</param>
+        /// <returns>The builder (so method calls can be chained).</returns>
+        public static CollectionOptionsBuilder SetValidationAction(DocumentValidationAction validationAction)
+        {
+            return new CollectionOptionsBuilder().SetValidationAction(validationAction);
+        }
+
+        /// <summary>
+        /// Sets the validation level.
+        /// </summary>
+        /// <param name="validationLevel">The validation level.</param>
+        /// <returns>The builder (so method calls can be chained).</returns>
+        public static CollectionOptionsBuilder SetValidationLevel(DocumentValidationLevel validationLevel)
+        {
+            return new CollectionOptionsBuilder().SetValidationLevel(validationLevel);
+        }
+
+        /// <summary>
+        /// Sets the validator.
+        /// </summary>
+        /// <param name="validator">The validator.</param>
+        /// <returns>The builder (so method calls can be chained).</returns>
+        public static CollectionOptionsBuilder SetValidator(IMongoQuery validator)
+        {
+            return new CollectionOptionsBuilder().SetValidator(validator);
+        }
     }
 
     /// <summary>
     /// A builder for the options used when creating a collection.
     /// </summary>
+#if NET452
     [Serializable]
+#endif
     [BsonSerializer(typeof(CollectionOptionsBuilder.Serializer))]
     public class CollectionOptionsBuilder : BuilderBase, IMongoCollectionOptions
     {
@@ -112,6 +164,7 @@ namespace MongoDB.Driver.Builders
         /// </summary>
         /// <param name="value">Whether to automatically create an index on the _id element.</param>
         /// <returns>The builder (so method calls can be chained).</returns>
+        [Obsolete("AutoIndexId has been deprecated since server version 3.2.")]
         public CollectionOptionsBuilder SetAutoIndexId(bool value)
         {
             _document["autoIndexId"] = value;
@@ -126,6 +179,28 @@ namespace MongoDB.Driver.Builders
         public CollectionOptionsBuilder SetCapped(bool value)
         {
             _document["capped"] = value;
+            return this;
+        }
+
+        /// <summary>
+        /// Sets the collation.
+        /// </summary>
+        /// <param name="value">The collation.</param>
+        /// <returns>The builder (so method calls can be chained).</returns>
+        public CollectionOptionsBuilder SetCollation(Collation value)
+        {
+            _document["collation"] = value.ToBsonDocument();
+            return this;
+        }
+
+        /// <summary>
+        /// Sets the index options defaults.
+        /// </summary>
+        /// <param name="value">The index options defaults.</param>
+        /// <returns>The builder (so method calls can be chained).</returns>
+        public CollectionOptionsBuilder SetIndexOptionDefaults(IndexOptionDefaults value)
+        {
+            _document["indexOptionDefaults"] = value.ToBsonDocument();
             return this;
         }
 
@@ -159,6 +234,39 @@ namespace MongoDB.Driver.Builders
         public CollectionOptionsBuilder SetStorageEngineOptions(BsonDocument value)
         {
             _document["storageEngine"] = value;
+            return this;
+        }
+
+        /// <summary>
+        /// Sets the validation action.
+        /// </summary>
+        /// <param name="validationAction">The validation action.</param>
+        /// <returns>The builder (so method calls can be chained).</returns>
+        public CollectionOptionsBuilder SetValidationAction(DocumentValidationAction validationAction)
+        {
+            _document["validationAction"] = validationAction.ToString().ToLowerInvariant();
+            return this;
+        }
+
+        /// <summary>
+        /// Sets the validation level.
+        /// </summary>
+        /// <param name="validationLevel">The validation level.</param>
+        /// <returns>The builder (so method calls can be chained).</returns>
+        public CollectionOptionsBuilder SetValidationLevel(DocumentValidationLevel validationLevel)
+        {
+            _document["validationLevel"] = validationLevel.ToString().ToLowerInvariant();
+            return this;
+        }
+
+        /// <summary>
+        /// Sets the validator.
+        /// </summary>
+        /// <param name="validator">The validator.</param>
+        /// <returns>The builder (so method calls can be chained).</returns>
+        public CollectionOptionsBuilder SetValidator(IMongoQuery validator)
+        {
+            _document["validator"] = validator.ToBsonDocument();
             return this;
         }
 

@@ -1,4 +1,4 @@
-﻿/* Copyright 2010-2014 MongoDB Inc.
+/* Copyright 2010-present MongoDB Inc.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -13,8 +13,11 @@
 * limitations under the License.
 */
 
+using System;
 using MongoDB.Bson;
 using MongoDB.Driver.Core.Misc;
+using System.Collections.Generic;
+using MongoDB.Driver.Core.Connections;
 
 namespace MongoDB.Driver.Core.Operations
 {
@@ -24,6 +27,8 @@ namespace MongoDB.Driver.Core.Operations
     public sealed class UpdateRequest : WriteRequest
     {
         // fields
+        private IEnumerable<BsonDocument> _arrayFilters;
+        private Collation _collation;
         private readonly BsonDocument _filter;
         private bool _isMulti;
         private bool _isUpsert;
@@ -41,11 +46,36 @@ namespace MongoDB.Driver.Core.Operations
             : base(WriteRequestType.Update)
         {
             _updateType = updateType;
-            _filter = Ensure.IsNotNull(filter, "filter");
-            _update = Ensure.IsNotNull(update, "update");
+            _filter = Ensure.IsNotNull(filter, nameof(filter));
+            _update = Ensure.IsNotNull(update, nameof(update));
+            if (updateType == UpdateType.Update && _update.ElementCount == 0)
+            {
+                throw new ArgumentException("Updates must have at least 1 update operator.", nameof(update));
+            }
         }
 
         // properties
+        /// <summary>
+        /// Gets or sets the array filters.
+        /// </summary>
+        /// <value>
+        /// The array filters.
+        /// </value>
+        public IEnumerable<BsonDocument> ArrayFilters
+        {
+            get { return _arrayFilters; }
+            set { _arrayFilters = value; }
+        }
+
+        /// <summary>
+        /// Gets or sets the collation.
+        /// </summary>
+        public Collation Collation
+        {
+            get { return _collation; }
+            set { _collation = value; }
+        }
+
         /// <summary>
         /// Gets the filter.
         /// </summary>
@@ -92,6 +122,13 @@ namespace MongoDB.Driver.Core.Operations
         public UpdateType UpdateType
         {
             get { return _updateType; }
+        }
+
+        // public methods
+        /// <inheritdoc />
+        public override bool IsRetryable(ConnectionDescription connectionDescription)
+        {
+            return !_isMulti;
         }
     }
 }

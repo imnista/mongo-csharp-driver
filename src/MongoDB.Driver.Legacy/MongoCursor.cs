@@ -1,4 +1,4 @@
-﻿/* Copyright 2010-2014 MongoDB Inc.
+/* Copyright 2010-present MongoDB Inc.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -17,6 +17,7 @@ using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
+using System.Reflection;
 using System.Threading;
 using MongoDB.Bson;
 using MongoDB.Bson.Serialization;
@@ -25,7 +26,7 @@ using MongoDB.Driver.Builders;
 using MongoDB.Driver.Core.Clusters;
 using MongoDB.Driver.Core.Misc;
 using MongoDB.Driver.Core.Operations;
-using MongoDB.Driver.Sync;
+using MongoDB.Shared;
 
 namespace MongoDB.Driver
 {
@@ -36,6 +37,7 @@ namespace MongoDB.Driver
     public abstract class MongoCursor : IEnumerable
     {
         // private fields
+        private Collation _collation;
         private readonly MongoCollection _collection;
         private readonly MongoDatabase _database;
         private readonly IMongoQuery _query;
@@ -43,6 +45,8 @@ namespace MongoDB.Driver
         private IMongoFields _fields;
         private BsonDocument _options;
         private QueryFlags _flags;
+        private TimeSpan? _maxAwaitTime;
+        private ReadConcern _readConcern = ReadConcern.Default;
         private ReadPreference _readPreference;
         private IBsonSerializer _serializer;
         private int _skip;
@@ -68,6 +72,20 @@ namespace MongoDB.Driver
             _readPreference = readPreference;
         }
 
+        /// <summary>
+        /// Initializes a new instance of the <see cref="MongoCursor"/> class.
+        /// </summary>
+        /// <param name="collection">The collection.</param>
+        /// <param name="query">The query.</param>
+        /// <param name="readConcern">The read concern.</param>
+        /// <param name="readPreference">The read preference.</param>
+        /// <param name="serializer">The serializer.</param>
+        protected MongoCursor(MongoCollection collection, IMongoQuery query, ReadConcern readConcern, ReadPreference readPreference, IBsonSerializer serializer)
+            : this(collection, query, readPreference, serializer)
+        {
+            _readConcern = readConcern;
+        }
+
         // public properties
         /// <summary>
         /// Gets the server that the query will be sent to.
@@ -83,6 +101,14 @@ namespace MongoDB.Driver
         public virtual MongoDatabase Database
         {
             get { return _database; }
+        }
+
+        /// <summary>
+        /// Gets the collation.
+        /// </summary>
+        public virtual Collation Collation
+        {
+            get { return _collation; }
         }
 
         /// <summary>
@@ -148,6 +174,30 @@ namespace MongoDB.Driver
                 if (_isFrozen) { ThrowFrozen(); }
                 _flags = value;
             }
+        }
+
+        /// <summary>
+        /// Gets or sets the maximum await time for TailableAwait cursors.
+        /// </summary>
+        /// <value>
+        /// The maximum await time for TailableAwait cursors.
+        /// </value>
+        public virtual TimeSpan? MaxAwaitTime
+        {
+            get { return _maxAwaitTime; }
+            set
+            {
+                if (_isFrozen) { ThrowFrozen(); }
+                _maxAwaitTime = value;
+            }
+        }
+
+        /// <summary>
+        /// Gets the read concern.
+        /// </summary>
+        public virtual ReadConcern ReadConcern
+        {
+            get { return _readConcern; }
         }
 
         /// <summary>
@@ -231,12 +281,34 @@ namespace MongoDB.Driver
         /// <returns>
         /// A cursor.
         /// </returns>
+        [Obsolete("Use a method that returns a cursor instead.")]
         public static MongoCursor Create(Type documentType, MongoCollection collection, IMongoQuery query, ReadPreference readPreference, IBsonSerializer serializer)
         {
             var cursorDefinition = typeof(MongoCursor<>);
             var cursorType = cursorDefinition.MakeGenericType(documentType);
-            var constructorInfo = cursorType.GetConstructor(new Type[] { typeof(MongoCollection), typeof(IMongoQuery), typeof(ReadPreference), typeof(IBsonSerializer) });
+            var constructorInfo = cursorType.GetTypeInfo().GetConstructor(new Type[] { typeof(MongoCollection), typeof(IMongoQuery), typeof(ReadPreference), typeof(IBsonSerializer) });
             return (MongoCursor)constructorInfo.Invoke(new object[] { collection, query, readPreference, serializer });
+        }
+
+        /// <summary>
+        /// Creates a cursor.
+        /// </summary>
+        /// <param name="documentType">Type of the document.</param>
+        /// <param name="collection">The collection.</param>
+        /// <param name="query">The query.</param>
+        /// <param name="readConcern">The read concern.</param>
+        /// <param name="readPreference">The read preference.</param>
+        /// <param name="serializer">The serializer.</param>
+        /// <returns>
+        /// A cursor.
+        /// </returns>
+        [Obsolete("Use a method that returns a cursor instead.")]
+        public static MongoCursor Create(Type documentType, MongoCollection collection, IMongoQuery query, ReadConcern readConcern, ReadPreference readPreference, IBsonSerializer serializer)
+        {
+            var cursorDefinition = typeof(MongoCursor<>);
+            var cursorType = cursorDefinition.MakeGenericType(documentType);
+            var constructorInfo = cursorType.GetTypeInfo().GetConstructor(new Type[] { typeof(MongoCollection), typeof(IMongoQuery), typeof(ReadConcern), typeof(ReadPreference), typeof(IBsonSerializer) });
+            return (MongoCursor)constructorInfo.Invoke(new object[] { collection, query, readConcern, readPreference, serializer });
         }
 
         // public methods
@@ -284,13 +356,17 @@ namespace MongoDB.Driver
         /// </returns>
         public virtual MongoCursor Clone(Type documentType, IBsonSerializer serializer)
         {
-            var clone = Create(documentType, _collection, _query, _readPreference, serializer);
-            clone._options = _options == null ? null : (BsonDocument)_options.Clone();
-            clone._flags = _flags;
-            clone._skip = _skip;
-            clone._limit = _limit;
+#pragma warning disable 618
+            var clone = Create(documentType, _collection, _query, _readConcern, _readPreference, serializer);
+#pragma warning restore
             clone._batchSize = _batchSize;
+            clone._collation = _collation;
             clone._fields = _fields;
+            clone._flags = _flags;
+            clone._limit = _limit;
+            clone._maxAwaitTime = _maxAwaitTime;
+            clone._options = _options == null ? null : (BsonDocument)_options.Clone();
+            clone._skip = _skip;
             return clone;
         }
 
@@ -303,6 +379,7 @@ namespace MongoDB.Driver
             _isFrozen = true;
             var args = new CountArgs
             {
+                Collation = _collation,
                 Query = _query,
                 ReadPreference = _readPreference
             };
@@ -368,6 +445,18 @@ namespace MongoDB.Driver
                 }
             }
             return explanation;
+        }
+
+        /// <summary>
+        /// Sets the collation.
+        /// </summary>
+        /// <param name="collation">The collation.</param>
+        /// <returns>The cursor (so you can chain method calls to it).</returns>
+        public virtual MongoCursor SetCollation(Collation collation)
+        {
+            if (_isFrozen) { ThrowFrozen(); }
+            _collation = collation;
+            return this;
         }
 
         /// <summary>
@@ -469,10 +558,23 @@ namespace MongoDB.Driver
         }
 
         /// <summary>
+        /// Sets the maximum await time for tailable await cursors.
+        /// </summary>
+        /// <param name="value">The value.</param>
+        /// <returns>The cursor (so you can chain method calls to it).</returns>
+        public virtual MongoCursor SetMaxAwaitTime(TimeSpan? value)
+        {
+            if (_isFrozen) { ThrowFrozen(); }
+            _maxAwaitTime = value;
+            return this;
+        }
+
+        /// <summary>
         /// Sets the maximum number of documents to scan.
         /// </summary>
         /// <param name="maxScan">The maximum number of documents to scan.</param>
         /// <returns>The cursor (so you can chain method calls to it).</returns>
+        [Obsolete("MaxScan was deprecated in server version 4.0.")]
         public virtual MongoCursor SetMaxScan(int maxScan)
         {
             if (_isFrozen) { ThrowFrozen(); }
@@ -488,7 +590,7 @@ namespace MongoDB.Driver
         public virtual MongoCursor SetMaxTime(TimeSpan maxTime)
         {
             if (_isFrozen) { ThrowFrozen(); }
-            SetOption("$maxTimeMS", maxTime.TotalMilliseconds);
+            SetOption("$maxTimeMS", MaxTimeHelper.ToMaxTimeMS(maxTime));
             return this;
         }
 
@@ -587,6 +689,7 @@ namespace MongoDB.Driver
         /// Sets the $snapshot option.
         /// </summary>
         /// <returns>The cursor (so you can chain method calls to it).</returns>
+        [Obsolete("Snapshot was deprecated in server version 3.7.4.")]
         public virtual MongoCursor SetSnapshot()
         {
             if (_isFrozen) { ThrowFrozen(); }
@@ -630,6 +733,7 @@ namespace MongoDB.Driver
             _isFrozen = true;
             var args = new CountArgs
             {
+                Collation = _collation,
                 Query = _query,
                 Limit = (_limit == 0) ? (int?)null : _limit,
                 ReadPreference = _readPreference,
@@ -688,8 +792,23 @@ namespace MongoDB.Driver
         /// <param name="query">The query.</param>
         /// <param name="readPreference">The read preference.</param>
         /// <param name="serializer">The serializer.</param>
+        [Obsolete("Use a method that returns a cursor instead.")]
         public MongoCursor(MongoCollection collection, IMongoQuery query, ReadPreference readPreference, IBsonSerializer serializer)
             : base(collection, query, readPreference, serializer)
+        {
+        }
+
+        /// <summary>
+        /// Initializes a new instance of the <see cref="MongoCursor{TDocument}" /> class.
+        /// </summary>
+        /// <param name="collection">The collection.</param>
+        /// <param name="query">The query.</param>
+        /// <param name="readConcern">The read concern.</param>
+        /// <param name="readPreference">The read preference.</param>
+        /// <param name="serializer">The serializer.</param>
+        [Obsolete("Use a method that returns a cursor instead.")]
+        public MongoCursor(MongoCollection collection, IMongoQuery query, ReadConcern readConcern, ReadPreference readPreference, IBsonSerializer serializer)
+                    : base(collection, query, readConcern, readPreference, serializer)
         {
         }
 
@@ -709,6 +828,11 @@ namespace MongoDB.Driver
         /// </summary>
         /// <returns>An enumerator that can be used to iterate over the cursor.</returns>
         public virtual IEnumerator<TDocument> GetEnumerator()
+        {
+            return Collection.UsingImplicitSession(session => GetEnumerator(session));
+        }
+
+        private IEnumerator<TDocument> GetEnumerator(IClientSessionHandle session)
         {
             IsFrozen = true;
 
@@ -740,20 +864,30 @@ namespace MongoDB.Driver
             {
                 AllowPartialResults = partialOk,
                 BatchSize = BatchSize,
+                Collation = Collation,
                 CursorType = cursorType,
                 Filter = queryDocument,
                 Limit = Limit,
+                MaxAwaitTime = MaxAwaitTime,
                 Modifiers = Options,
                 NoCursorTimeout = noCursorTimeout,
                 Projection = Fields.ToBsonDocument(),
+                ReadConcern = ReadConcern,
                 Skip = Skip
             };
 
-            using (var binding = Server.GetReadBinding(ReadPreference))
-            {
-                var cursor = operation.Execute(binding);
-                return new AsyncCursorEnumeratorAdapter<TDocument>(cursor).GetEnumerator();
-            }
+            var cursor = Collection.ExecuteReadOperation(session, operation, ReadPreference);
+            return cursor.ToEnumerable().GetEnumerator();
+        }
+
+        /// <summary>
+        /// Sets the collation.
+        /// </summary>
+        /// <param name="collation">The collation.</param>
+        /// <returns>The cursor (so you can chain method calls to it).</returns>
+        public new virtual MongoCursor<TDocument> SetCollation(Collation collation)
+        {
+            return (MongoCursor<TDocument>)base.SetCollation(collation);
         }
 
         /// <summary>
@@ -838,10 +972,21 @@ namespace MongoDB.Driver
         }
 
         /// <summary>
+        /// Sets the maximum await time for tailable await cursors.
+        /// </summary>
+        /// <param name="value">The value.</param>
+        /// <returns>The cursor (so you can chain method calls to it).</returns>
+        public new virtual MongoCursor SetMaxAwaitTime(TimeSpan? value)
+        {
+            return (MongoCursor<TDocument>)base.SetMaxAwaitTime(value);
+        }
+
+        /// <summary>
         /// Sets the maximum number of documents to scan.
         /// </summary>
         /// <param name="maxScan">The maximum number of documents to scan.</param>
         /// <returns>The cursor (so you can chain method calls to it).</returns>
+        [Obsolete("MaxScan was deprecated in server version 4.0.")]
         public new virtual MongoCursor<TDocument> SetMaxScan(int maxScan)
         {
             return (MongoCursor<TDocument>)base.SetMaxScan(maxScan);
@@ -932,6 +1077,7 @@ namespace MongoDB.Driver
         /// Sets the $snapshot option.
         /// </summary>
         /// <returns>The cursor (so you can chain method calls to it).</returns>
+        [Obsolete("Snapshot was deprecated in server version 3.7.4.")]
         public new virtual MongoCursor<TDocument> SetSnapshot()
         {
             return (MongoCursor<TDocument>)base.SetSnapshot();

@@ -1,4 +1,4 @@
-﻿/* Copyright 2010-2014 MongoDB Inc.
+﻿/* Copyright 2010-present MongoDB Inc.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -14,6 +14,7 @@
 */
 
 using System;
+using System.Reflection;
 using MongoDB.Bson.Serialization.Serializers;
 
 namespace MongoDB.Bson.Serialization
@@ -23,27 +24,24 @@ namespace MongoDB.Bson.Serialization
     /// </summary>
     public class DiscriminatedInterfaceSerializationProvider : BsonSerializationProviderBase
     {
-        /// <summary>
-        /// Gets the serializer.
-        /// </summary>
-        /// <param name="type">The type.</param>
-        /// <returns>A serializer.</returns>
-        public override IBsonSerializer GetSerializer(Type type)
+        /// <inheritdoc/>
+        public override IBsonSerializer GetSerializer(Type type, IBsonSerializerRegistry serializerRegistry)
         {
             if (type == null)
             {
                 throw new ArgumentNullException("type");
             }
-            if (type.IsGenericType && type.ContainsGenericParameters)
+            var typeInfo = type.GetTypeInfo();
+            if (typeInfo.IsGenericType && typeInfo.ContainsGenericParameters)
             {
                 var message = string.Format("Generic type {0} has unassigned type parameters.", BsonUtils.GetFriendlyTypeName(type));
                 throw new ArgumentException(message, "type");
             }
 
-            if (type.IsInterface)
+            if (typeInfo.IsInterface)
             {
                 var serializerTypeDefinition = typeof(DiscriminatedInterfaceSerializer<>);
-                return CreateGenericSerializer(serializerTypeDefinition, type);
+                return CreateGenericSerializer(serializerTypeDefinition, new[] { type }, serializerRegistry);
             }
 
             return null;

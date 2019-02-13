@@ -1,4 +1,4 @@
-﻿/* Copyright 2010-2014 MongoDB Inc.
+/* Copyright 2010-present MongoDB Inc.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -125,7 +125,9 @@ namespace MongoDB.Driver.Builders
     /// <summary>
     /// A builder for specifying the keys for an index.
     /// </summary>
+#if NET452
     [Serializable]
+#endif
     [BsonSerializer(typeof(IndexKeysBuilder.Serializer))]
     public class IndexKeysBuilder : BuilderBase, IMongoIndexKeys
     {
@@ -402,7 +404,9 @@ namespace MongoDB.Driver.Builders
     /// A builder for specifying the keys for an index.
     /// </summary>
     /// <typeparam name="TDocument">The type of the document.</typeparam>
+#if NET452
     [Serializable]
+#endif
     [BsonSerializer(typeof(IndexKeysBuilder<>.Serializer))]
     public class IndexKeysBuilder<TDocument> : BuilderBase, IMongoIndexKeys
     {

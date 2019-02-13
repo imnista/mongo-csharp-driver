@@ -1,4 +1,4 @@
-﻿/* Copyright 2013-2014 MongoDB Inc.
+﻿/* Copyright 2013-present MongoDB Inc.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -54,32 +54,45 @@ namespace MongoDB.Driver.Core.Operations
 
         public static BsonDocument CreateReadPreferenceDocument(ServerType serverType, ReadPreference readPreference)
         {
-            if (readPreference == null)
+            if (serverType != ServerType.ShardRouter || readPreference == null)
             {
                 return null;
             }
-            if (serverType != ServerType.ShardRouter)
+
+            // simple ReadPreferences of Primary and SecondaryPreferred are encoded in the slaveOk bit
+            if (readPreference.ReadPreferenceMode == ReadPreferenceMode.Primary || readPreference.ReadPreferenceMode == ReadPreferenceMode.SecondaryPreferred)
+            {
+                var hasTagSets = readPreference.TagSets != null && readPreference.TagSets.Count > 0;
+                if (!hasTagSets && !readPreference.MaxStaleness.HasValue)
+                {
+                    return null;
+                }
+            }
+
+            return CreateReadPreferenceDocument(readPreference);
+        }
+
+        public static BsonDocument CreateReadPreferenceDocument(ReadPreference readPreference)
+        {
+            if (readPreference == null)
             {
                 return null;
             }
 
             BsonArray tagSets = null;
-            if (readPreference.TagSets != null && readPreference.TagSets.Any())
+            if (readPreference.TagSets != null && readPreference.TagSets.Count > 0)
             {
                 tagSets = new BsonArray(readPreference.TagSets.Select(ts => new BsonDocument(ts.Tags.Select(t => new BsonElement(t.Name, t.Value)))));
             }
-            else if (readPreference.ReadPreferenceMode == ReadPreferenceMode.Primary || readPreference.ReadPreferenceMode == ReadPreferenceMode.SecondaryPreferred)
-            {
-                return null;
-            }
 
-            var readPreferenceString = readPreference.ReadPreferenceMode.ToString();
-            readPreferenceString = Char.ToLowerInvariant(readPreferenceString[0]) + readPreferenceString.Substring(1);
+            var modeString = readPreference.ReadPreferenceMode.ToString();
+            modeString = Char.ToLowerInvariant(modeString[0]) + modeString.Substring(1);
 
             return new BsonDocument
             {
-                { "mode", readPreferenceString },
-                { "tags", tagSets, tagSets != null }
+                { "mode", modeString },
+                { "tags", tagSets, tagSets != null },
+                { "maxStalenessSeconds", () => (int)readPreference.MaxStaleness.Value.TotalSeconds, readPreference.MaxStaleness.HasValue }
             };
         }
     }

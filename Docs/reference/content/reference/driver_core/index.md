@@ -4,13 +4,14 @@ draft = false
 title = "Driver Core"
 [menu.main]
   parent = "Reference"
+  identifier = "Driver Core"
   weight = 30
   pre = "<i class='fa'></i>"
 +++
 
 ## Driver Core
 
-Driver Core is a full driver with complete support for all types of deployment configurations, authentication, SSL, and cursors. The API is verbose, but highly configurable which is why it's a great solution to build higher-level APIs upon. The [MongoDB .NET Driver]({{< relref "reference\driver\index.md" >}} is built upon Driver Core.
+Driver Core is a full driver with complete support for all types of deployment configurations, authentication, SSL, and cursors. The API is verbose, but highly configurable which is why it's a great solution to build higher-level APIs upon. The [MongoDB .NET Driver]({{< relref "reference\driver\index.md" >}}) is built upon Driver Core.
 
 ## Services
 
@@ -35,3 +36,7 @@ A large number of operations have been implemented for everything from a generic
 ### Bindings
 
 Bindings glue together server selection and operation execution by influencing how and where operations get executed. It would be possible to construct bindings that, for instance, pipeline multiple operations down the same connection or ensure that OP_GETMORE requests are sent down the same connection as the initial OP_QUERY.
+
+### [Eventing]({{< relref "events.md" >}})
+
+The driver provides many events related to server selection, connection pooling, cluster monitoring, command execution, etc... These events are subscribable to provide solutions such as logging and performance counters.

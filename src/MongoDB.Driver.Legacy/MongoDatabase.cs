@@ -1,4 +1,4 @@
-﻿/* Copyright 2010-2014 MongoDB Inc.
+/* Copyright 2010-present MongoDB Inc.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -16,6 +16,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Reflection;
 using System.Text;
 using System.Threading;
 using MongoDB.Bson;
@@ -23,11 +24,11 @@ using MongoDB.Bson.IO;
 using MongoDB.Bson.Serialization;
 using MongoDB.Driver.Builders;
 using MongoDB.Driver.Core.Clusters;
+using MongoDB.Driver.Core.Misc;
 using MongoDB.Driver.Core.Operations;
 using MongoDB.Driver.Core.WireProtocol.Messages.Encoders;
 using MongoDB.Driver.GridFS;
 using MongoDB.Driver.Operations;
-using MongoDB.Driver.Sync;
 
 namespace MongoDB.Driver
 {
@@ -37,6 +38,7 @@ namespace MongoDB.Driver
     public class MongoDatabase
     {
         // private fields
+        private readonly IOperationExecutor _operationExecutor;
         private readonly MongoServer _server;
         private readonly MongoDatabaseSettings _settings;
         private readonly DatabaseNamespace _namespace;
@@ -49,7 +51,13 @@ namespace MongoDB.Driver
         /// <param name="server">The server that contains this database.</param>
         /// <param name="name">The name of the database.</param>
         /// <param name="settings">The settings to use to access this database.</param>
+        [Obsolete("User server.GetDatabase() instead.")]
         public MongoDatabase(MongoServer server, string name, MongoDatabaseSettings settings)
+            : this(server, name, settings, new DefaultLegacyOperationExecutor())
+        {
+        }
+
+        internal MongoDatabase(MongoServer server, string name, MongoDatabaseSettings settings, IOperationExecutor operationExecutor)
         {
             if (server == null)
             {
@@ -76,6 +84,7 @@ namespace MongoDB.Driver
             _server = server;
             _namespace = new DatabaseNamespace(name);
             _settings = settings;
+            _operationExecutor = operationExecutor;
         }
 
         // public properties
@@ -159,14 +168,21 @@ namespace MongoDB.Driver
         [Obsolete("Use the new user management command 'createUser' or 'updateUser'.")]
         public virtual void AddUser(MongoUser user)
         {
+            UsingImplicitSession(session => AddUser(session, user));
+        }
+
+#pragma warning disable 618
+        private void AddUser(IClientSessionHandle session, MongoUser user)
+        {
             var operation = new AddUserOperation(
                 _namespace,
                 user.Username,
                 user.PasswordHash,
                 user.IsReadOnly,
                 GetMessageEncoderSettings());
-            ExecuteWriteOperation(operation);
+            ExecuteWriteOperation(session, operation);
         }
+#pragma warning restore
 
         /// <summary>
         /// Tests whether a collection exists on this database.
@@ -175,7 +191,12 @@ namespace MongoDB.Driver
         /// <returns>True if the collection exists.</returns>
         public virtual bool CollectionExists(string collectionName)
         {
-            return GetCollectionNames().Contains(collectionName);
+            return UsingImplicitSession(session => CollectionExists(session, collectionName));
+        }
+
+        private bool CollectionExists(IClientSessionHandle session, string collectionName)
+        {
+            return GetCollectionNames(session).Contains(collectionName);
         }
 
         /// <summary>
@@ -198,6 +219,11 @@ namespace MongoDB.Driver
         /// <returns>A CommandResult.</returns>
         public virtual CommandResult CreateCollection(string collectionName, IMongoCollectionOptions options)
         {
+            return UsingImplicitSession(session => CreateCollection(session, collectionName, options));
+        }
+
+        private CommandResult CreateCollection(IClientSessionHandle session, string collectionName, IMongoCollectionOptions options)
+        {
             if (collectionName == null)
             {
                 throw new ArgumentNullException("collectionName");
@@ -207,10 +233,16 @@ namespace MongoDB.Driver
             var messageEncoderSettings = GetMessageEncoderSettings();
             bool? autoIndexId = null;
             bool? capped = null;
+            Collation collation = null;
+            BsonDocument indexOptionDefaults = null;
             int? maxDocuments = null;
             long? maxSize = null;
+            bool? noPadding = null;
             BsonDocument storageEngine = null;
             bool? usePowerOf2Sizes = null;
+            DocumentValidationAction? validationAction = null;
+            DocumentValidationLevel? validationLevel = null;
+            BsonDocument validator = null;
 
             if (options != null)
             {
@@ -225,9 +257,21 @@ namespace MongoDB.Driver
                 {
                     capped = value.ToBoolean();
                 }
+                if (optionsDocument.TryGetValue("collation", out value))
+                {
+                    collation = Collation.FromBsonDocument(value.AsBsonDocument);
+                }
+                if (optionsDocument.TryGetValue("indexOptionDefaults", out value))
+                {
+                    indexOptionDefaults = value.AsBsonDocument;
+                }
                 if (optionsDocument.TryGetValue("max", out value))
                 {
                     maxDocuments = value.ToInt32();
+                }
+                if (optionsDocument.TryGetValue("flags", out value))
+                {
+                    noPadding = ((CollectionUserFlags)value.ToInt32() & CollectionUserFlags.NoPadding) != 0;
                 }
                 if (optionsDocument.TryGetValue("size", out value))
                 {
@@ -239,21 +283,93 @@ namespace MongoDB.Driver
                 }
                 if (optionsDocument.TryGetValue("flags", out value))
                 {
-                    usePowerOf2Sizes = value.ToInt32() == 1;
+                    usePowerOf2Sizes = ((CollectionUserFlags)value.ToInt32() & CollectionUserFlags.UsePowerOf2Sizes) != 0;
+                }
+                if (optionsDocument.TryGetValue("validationAction", out value))
+                {
+                    validationAction = (DocumentValidationAction)Enum.Parse(typeof(DocumentValidationAction), value.AsString, ignoreCase: true);
+                }
+                if (optionsDocument.TryGetValue("validationLevel", out value))
+                {
+                    validationLevel = (DocumentValidationLevel)Enum.Parse(typeof(DocumentValidationLevel), value.AsString, ignoreCase: true);
+                }
+                if (optionsDocument.TryGetValue("validator", out value))
+                {
+                    validator = value.AsBsonDocument;
                 }
             }
 
+#pragma warning disable 618
             var operation = new CreateCollectionOperation(collectionNamespace, messageEncoderSettings)
             {
                 AutoIndexId = autoIndexId,
                 Capped = capped,
+                Collation = collation,
+                IndexOptionDefaults = indexOptionDefaults,
                 MaxDocuments = maxDocuments,
                 MaxSize = maxSize,
+                NoPadding = noPadding,
                 StorageEngine = storageEngine,
-                UsePowerOf2Sizes = usePowerOf2Sizes
+                UsePowerOf2Sizes = usePowerOf2Sizes,
+                ValidationAction = validationAction,
+                ValidationLevel = validationLevel,
+                Validator = validator,
+                WriteConcern = _settings.WriteConcern
+            };
+#pragma warning restore
+
+            var response = ExecuteWriteOperation(session, operation);
+            return new CommandResult(response);
+        }
+
+        /// <summary>
+        /// Creates a view.
+        /// </summary>
+        /// <param name="viewName">The name of the view.</param>
+        /// <param name="viewOn">The name of the collection that the view is on.</param>
+        /// <param name="pipeline">The pipeline.</param>
+        /// <param name="options">The options.</param>
+        /// <returns>A CommandResult.</returns>
+        public virtual CommandResult CreateView(string viewName, string viewOn, IEnumerable<BsonDocument> pipeline, IMongoCreateViewOptions options)
+        {
+            return UsingImplicitSession(session => CreateView(session, viewName, viewOn, pipeline, options));
+        }
+
+        private CommandResult CreateView(IClientSessionHandle session, string viewName, string viewOn, IEnumerable<BsonDocument> pipeline, IMongoCreateViewOptions options)
+        {
+            if (viewName == null)
+            {
+                throw new ArgumentNullException(nameof(viewName));
+            }
+            if (viewOn == null)
+            {
+                throw new ArgumentNullException(nameof(viewOn));
+            }
+            if (pipeline == null)
+            {
+                throw new ArgumentNullException(nameof(pipeline));
+            }
+
+            Collation collation = null;
+
+            if (options != null)
+            {
+                var optionsDocument = options.ToBsonDocument();
+
+                BsonValue value;
+                if (optionsDocument.TryGetValue("collation", out value))
+                {
+                    collation = Collation.FromBsonDocument(value.AsBsonDocument);
+                }
+            }
+
+            var operation = new CreateViewOperation(_namespace, viewName, viewOn, pipeline, GetMessageEncoderSettings())
+            {
+                Collation = collation,
+                WriteConcern = _settings.WriteConcern
             };
 
-            var response = ExecuteWriteOperation(operation);
+            var response = ExecuteWriteOperation(session, operation);
             return new CommandResult(response);
         }
 
@@ -272,11 +388,19 @@ namespace MongoDB.Driver
         /// <returns>A CommandResult.</returns>
         public virtual CommandResult DropCollection(string collectionName)
         {
+            return UsingImplicitSession(session => DropCollection(session, collectionName));
+        }
+
+        private CommandResult DropCollection(IClientSessionHandle session, string collectionName)
+        {
             var collectionNamespace = new CollectionNamespace(_namespace, collectionName);
             var messageEncoderSettings = GetMessageEncoderSettings();
 
-            var operation = new DropCollectionOperation(collectionNamespace, messageEncoderSettings);
-            var response = ExecuteWriteOperation(operation);
+            var operation = new DropCollectionOperation(collectionNamespace, messageEncoderSettings)
+            {
+                WriteConcern = _settings.WriteConcern
+            };
+            var response = ExecuteWriteOperation(session, operation);
             return new CommandResult(response);
         }
 
@@ -317,6 +441,11 @@ namespace MongoDB.Driver
         /// <returns>The result of evaluating the code.</returns>
         public virtual BsonValue Eval(EvalArgs args)
         {
+            return UsingImplicitSession(session => Eval(session, args));
+        }
+
+        private BsonValue Eval(IClientSessionHandle session, EvalArgs args)
+        {
             if (args == null) { throw new ArgumentNullException("args"); }
             if (args.Code == null) { throw new ArgumentException("Code is null.", "args"); }
 
@@ -327,10 +456,7 @@ namespace MongoDB.Driver
                 NoLock = args.Lock.HasValue ? !args.Lock : null
             };
 
-            using (var binding = _server.GetWriteBinding())
-            {
-                return operation.Execute(binding);
-            }
+            return ExecuteWriteOperation(session, operation);
         }
 
         /// <summary>
@@ -379,10 +505,17 @@ namespace MongoDB.Driver
         [Obsolete("Use the new user management command 'usersInfo'.")]
         public virtual MongoUser[] FindAllUsers()
         {
+            return UsingImplicitSession(session => FindAllUsers(session));
+        }
+
+#pragma warning disable 618
+        private MongoUser[] FindAllUsers(IClientSessionHandle session)
+        {
             var operation = new FindUsersOperation(_namespace, null, GetMessageEncoderSettings());
-            var userDocuments = ExecuteReadOperation(operation, ReadPreference.Primary);
+            var userDocuments = ExecuteReadOperation(session, operation, ReadPreference.Primary);
             return userDocuments.Select(u => ToMongoUser(u)).ToArray();
         }
+#pragma warning restore
 
         /// <summary>
         /// Finds a user of this database.
@@ -392,10 +525,17 @@ namespace MongoDB.Driver
         [Obsolete("Use the new user management command 'usersInfo'.")]
         public virtual MongoUser FindUser(string username)
         {
+            return UsingImplicitSession(session => FindUser(session, username));
+        }
+
+#pragma warning disable 618
+        private MongoUser FindUser(IClientSessionHandle session, string username)
+        {
             var operation = new FindUsersOperation(_namespace, username, GetMessageEncoderSettings());
-            var userDocuments = ExecuteReadOperation(operation, ReadPreference.Primary);
+            var userDocuments = ExecuteReadOperation(session, operation, ReadPreference.Primary);
             return userDocuments.Select(u => ToMongoUser(u)).FirstOrDefault();
         }
+#pragma warning disable
 
         /// <summary>
         /// Gets a MongoCollection instance representing a collection on this database
@@ -421,7 +561,7 @@ namespace MongoDB.Driver
         public virtual MongoCollection<TDefaultDocument> GetCollection<TDefaultDocument>(
             string collectionName, MongoCollectionSettings collectionSettings)
         {
-            return new MongoCollection<TDefaultDocument>(this, collectionName, collectionSettings);
+            return new MongoCollection<TDefaultDocument>(this, collectionName, collectionSettings, _operationExecutor);
         }
 
         /// <summary>
@@ -500,8 +640,12 @@ namespace MongoDB.Driver
         {
             var collectionDefinition = typeof(MongoCollection<>);
             var collectionType = collectionDefinition.MakeGenericType(defaultDocumentType);
-            var constructorInfo = collectionType.GetConstructor(new Type[] { typeof(MongoDatabase), typeof(string), typeof(MongoCollectionSettings) });
-            return (MongoCollection)constructorInfo.Invoke(new object[] { this, collectionName, collectionSettings });
+            var constructorParameterTypes = new Type[] { typeof(MongoDatabase), typeof(string), typeof(MongoCollectionSettings), typeof(IOperationExecutor) };
+            var constructorInfo = collectionType.GetTypeInfo()
+                .GetConstructors(BindingFlags.NonPublic | BindingFlags.Instance)
+                .Where(c => c.GetParameters().Select(p => p.ParameterType).SequenceEqual(constructorParameterTypes))
+                .Single();
+            return (MongoCollection)constructorInfo.Invoke(new object[] { this, collectionName, collectionSettings, _operationExecutor });
         }
 
         /// <summary>
@@ -527,9 +671,14 @@ namespace MongoDB.Driver
         /// <returns>A list of collection names.</returns>
         public virtual IEnumerable<string> GetCollectionNames()
         {
+            return UsingImplicitSession(session => GetCollectionNames(session));
+        }
+
+        private IEnumerable<string> GetCollectionNames(IClientSessionHandle session)
+        {
             var operation = new ListCollectionsOperation(_namespace, GetMessageEncoderSettings());
-            var cursor = ExecuteReadOperation(operation, ReadPreference.Primary);
-            var list = cursor.ToListAsync().GetAwaiter().GetResult();
+            var cursor = ExecuteReadOperation(session, operation, ReadPreference.Primary);
+            var list = cursor.ToList();
             return list.Select(c => c["name"].AsString).OrderBy(n => n).ToList();
         }
 
@@ -539,8 +688,13 @@ namespace MongoDB.Driver
         /// <returns>The current operation.</returns>
         public virtual BsonDocument GetCurrentOp()
         {
-            var collection = GetCollection("$cmd.sys.inprog");
-            return collection.FindOne();
+            return UsingImplicitSession(session => GetCurrentOp(session));
+        }
+
+        private BsonDocument GetCurrentOp(IClientSessionHandle session)
+        {
+            var operation = new CurrentOpOperation(_namespace, GetMessageEncoderSettings());
+            return ExecuteReadOperation(session, operation);
         }
 
         /// <summary>
@@ -656,8 +810,13 @@ namespace MongoDB.Driver
         [Obsolete("Use RunCommand with a { dropUser: <username> } document.")]
         public virtual void RemoveUser(string username)
         {
+            UsingImplicitSession(session => RemoveUser(session, username));
+        }
+
+        private void RemoveUser(IClientSessionHandle session, string username)
+        {
             var operation = new DropUserOperation(_namespace, username, GetMessageEncoderSettings());
-            ExecuteWriteOperation(operation);
+            ExecuteWriteOperation(session, operation);
         }
 
         /// <summary>
@@ -680,6 +839,11 @@ namespace MongoDB.Driver
         /// <returns>A CommandResult.</returns>
         public virtual CommandResult RenameCollection(string oldCollectionName, string newCollectionName, bool dropTarget)
         {
+            return UsingImplicitSession(session => RenameCollection(session, oldCollectionName, newCollectionName, dropTarget));
+        }
+
+        private CommandResult RenameCollection(IClientSessionHandle session, string oldCollectionName, string newCollectionName, bool dropTarget)
+        {
             if (oldCollectionName == null)
             {
                 throw new ArgumentNullException("oldCollectionName");
@@ -699,9 +863,10 @@ namespace MongoDB.Driver
             var messageEncoderSettings = GetMessageEncoderSettings();
             var operation = new RenameCollectionOperation(oldCollectionNamespace, newCollectionNamespace, messageEncoderSettings)
             {
-                DropTarget = dropTarget
+                DropTarget = dropTarget,
+                WriteConcern = _settings.WriteConcern
             };
-            var response = ExecuteWriteOperation(operation);
+            var response = ExecuteWriteOperation(session, operation);
             return new CommandResult(response);
         }
 
@@ -751,8 +916,17 @@ namespace MongoDB.Driver
             ReadPreference readPreference)
             where TCommandResult : CommandResult
         {
+            return UsingImplicitSession(session => RunCommandAs<TCommandResult>(session, command, readPreference));
+        }
+
+        private TCommandResult RunCommandAs<TCommandResult>(
+            IClientSessionHandle session,
+            IMongoCommand command,
+            ReadPreference readPreference)
+            where TCommandResult : CommandResult
+        {
             var resultSerializer = BsonSerializer.LookupSerializer<TCommandResult>();
-            return RunCommandAs<TCommandResult>(command, resultSerializer, readPreference);
+            return RunCommandAs<TCommandResult>(session, command, resultSerializer, readPreference);
         }
 
         /// <summary>
@@ -776,7 +950,7 @@ namespace MongoDB.Driver
         /// <returns>A TCommandResult</returns>
         public virtual CommandResult RunCommandAs(Type commandResultType, IMongoCommand command)
         {
-            var methodDefinition = GetType().GetMethod("RunCommandAs", new Type[] { typeof(IMongoCommand) });
+            var methodDefinition = GetType().GetTypeInfo().GetMethod("RunCommandAs", new Type[] { typeof(IMongoCommand) });
             var methodInfo = methodDefinition.MakeGenericMethod(commandResultType);
             return (CommandResult)methodInfo.Invoke(this, new object[] { command });
         }
@@ -828,21 +1002,60 @@ namespace MongoDB.Driver
             return _namespace.DatabaseName;
         }
 
+        /// <summary>
+        /// Returns a new MongoDatabase instance with a different read concern setting.
+        /// </summary>
+        /// <param name="readConcern">The read concern.</param>
+        /// <returns>A new MongoDatabase instance with a different read concern setting.</returns>
+        public virtual MongoDatabase WithReadConcern(ReadConcern readConcern)
+        {
+            Ensure.IsNotNull(readConcern, nameof(readConcern));
+            var newSettings = Settings.Clone();
+            newSettings.ReadConcern = readConcern;
+            return new MongoDatabase(_server, _namespace.DatabaseName, newSettings, _operationExecutor);
+        }
+
+        /// <summary>
+        /// Returns a new MongoDatabase instance with a different read preference setting.
+        /// </summary>
+        /// <param name="readPreference">The read preference.</param>
+        /// <returns>A new MongoDatabase instance with a different read preference setting.</returns>
+        public virtual MongoDatabase WithReadPreference(ReadPreference readPreference)
+        {
+            Ensure.IsNotNull(readPreference, nameof(readPreference));
+            var newSettings = Settings.Clone();
+            newSettings.ReadPreference = readPreference;
+            return new MongoDatabase(_server, _namespace.DatabaseName, newSettings, _operationExecutor);
+        }
+
+        /// <summary>
+        /// Returns a new MongoDatabase instance with a different write concern setting.
+        /// </summary>
+        /// <param name="writeConcern">The write concern.</param>
+        /// <returns>A new MongoDatabase instance with a different write concern setting.</returns>
+        public virtual MongoDatabase WithWriteConcern(WriteConcern writeConcern)
+        {
+            Ensure.IsNotNull(writeConcern, nameof(writeConcern));
+            var newSettings = Settings.Clone();
+            newSettings.WriteConcern = writeConcern;
+            return new MongoDatabase(_server, _namespace.DatabaseName, newSettings, _operationExecutor);
+        }
+
         // private methods
-        private TResult ExecuteReadOperation<TResult>(IReadOperation<TResult> operation, ReadPreference readPreference = null)
+        private TResult ExecuteReadOperation<TResult>(IClientSessionHandle session, IReadOperation<TResult> operation, ReadPreference readPreference = null)
         {
             readPreference = readPreference ?? _settings.ReadPreference ?? ReadPreference.Primary;
-            using (var binding = _server.GetReadBinding(readPreference))
+            using (var binding = _server.GetReadBinding(readPreference, session))
             {
-                return operation.Execute(binding);
+                return _operationExecutor.ExecuteReadOperation(binding, operation, CancellationToken.None);
             }
         }
 
-        private TResult ExecuteWriteOperation<TResult>(IWriteOperation<TResult> operation)
+        private TResult ExecuteWriteOperation<TResult>(IClientSessionHandle session, IWriteOperation<TResult> operation)
         {
-            using (var binding = _server.GetWriteBinding())
+            using (var binding = _server.GetWriteBinding(session))
             {
-                return operation.Execute(binding);
+                return _operationExecutor.ExecuteWriteOperation(binding, operation, CancellationToken.None);
             }
         }
 
@@ -857,6 +1070,7 @@ namespace MongoDB.Driver
         }
 
         internal TCommandResult RunCommandAs<TCommandResult>(
+            IClientSessionHandle session,
             IMongoCommand command,
             IBsonSerializer<TCommandResult> resultSerializer,
             ReadPreference readPreference)
@@ -868,12 +1082,12 @@ namespace MongoDB.Driver
             if (readPreference == ReadPreference.Primary)
             {
                 var operation = new WriteCommandOperation<TCommandResult>(_namespace, commandDocument, resultSerializer, messageEncoderSettings);
-                return ExecuteWriteOperation(operation);
+                return ExecuteWriteOperation(session, operation);
             }
             else
             {
                 var operation = new ReadCommandOperation<TCommandResult>(_namespace, commandDocument, resultSerializer, messageEncoderSettings);
-                return ExecuteReadOperation(operation, readPreference);
+                return ExecuteReadOperation(session, operation, readPreference);
             }
         }
 
@@ -886,5 +1100,21 @@ namespace MongoDB.Driver
             return new MongoUser(username, passwordHash, readOnly);
         }
 #pragma warning restore
+
+        private void UsingImplicitSession(Action<IClientSessionHandle> action)
+        {
+            using (var session = _operationExecutor.StartImplicitSession(CancellationToken.None))
+            {
+                action(session);
+            }
+        }
+
+        private TResult UsingImplicitSession<TResult>(Func<IClientSessionHandle, TResult> func)
+        {
+            using (var session = _operationExecutor.StartImplicitSession(CancellationToken.None))
+            {
+                return func(session);
+            }
+        }
     }
 }

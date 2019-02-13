@@ -1,4 +1,4 @@
-﻿/* Copyright 2010-2014 MongoDB Inc.
+﻿/* Copyright 2010-present MongoDB Inc.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -18,6 +18,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Text.RegularExpressions;
+using MongoDB.Shared;
 
 namespace MongoDB.Bson.IO
 {
@@ -26,6 +27,43 @@ namespace MongoDB.Bson.IO
     /// </summary>
     public class JsonReader : BsonReader
     {
+        #region static
+        private static readonly string[] __variableLengthIso8601Formats = new string[]
+        {
+            "yyyy-MM-ddTHH:mm:ss.FFFFFFFK",
+            "yyyy-MM-ddTHH:mm:ss.FFFFFFFzz",
+            "yyyyMMddTHHmmss.FFFFFFFK",
+            "yyyyMMddTHHmmss.FFFFFFFzz"
+        };
+
+        private static readonly string[][] __fixedLengthIso8601Formats = new string[][]
+        {
+            null, // length = 0
+            null, // length = 1
+            null, // length = 2
+            null, // length = 3
+            new [] { "yyyy" }, // length = 4
+            null, // length = 5
+            null, // length = 6
+            new [] { "yyyy-MM" }, // length = 7
+            new [] { "yyyyMMdd" }, // length = 8
+            null, // length = 9
+            new [] { "yyyy-MM-dd" }, // length = 10
+            new [] { "yyyyMMddTHH" }, // length = 11
+            new [] { "yyyyMMddTHHZ" }, // length = 12
+            new [] { "yyyy-MM-ddTHH" , "yyyyMMddTHHmm" }, // length = 13
+            new [] { "yyyy-MM-ddTHHZ", "yyyyMMddTHHmmZ", "yyyyMMddTHHzz" }, // length = 14
+            null, // length = 15
+            new [] { "yyyy-MM-ddTHH:mm", "yyyy-MM-ddTHHzz", "yyyyMMddTHHmmssZ", "yyyyMMddTHHmmzz" }, // length = 16
+            new [] { "yyyy-MM-ddTHH:mmZ", "yyyyMMddTHHzzz" }, // length = 17
+            new [] { "yyyyMMddTHHmmsszz" }, // length = 18
+            new [] { "yyyy-MM-ddTHH:mm:ss", "yyyy-MM-ddTHHzzz", "yyyy-MM-ddTHH:mmzz", "yyyyMMddTHHmmzzz" }, // length = 19
+            null, // length = 20
+            null, // length = 21
+            new [] { "yyyy-MM-ddTHH:mmzzz", "yyyy-MM-ddTHH:mm:sszz" } // length = 22
+        };
+        #endregion
+
         // private fields
         private readonly JsonBuffer _buffer;
         private readonly JsonReaderSettings _jsonReaderSettings; // same value as in base class just declared as derived class
@@ -284,6 +322,10 @@ namespace MongoDB.Bson.IO
                             CurrentBsonType = BsonType.MinKey;
                             _currentValue = BsonMinKey.Value;
                             break;
+                        case "NumberDecimal":
+                            CurrentBsonType = BsonType.Decimal128;
+                            _currentValue = ParseNumberDecimalConstructor();
+                            break;
                         case "Number":
                         case "NumberInt":
                             CurrentBsonType = BsonType.Int32;
@@ -375,7 +417,7 @@ namespace MongoDB.Bson.IO
             var subType = binaryData.SubType;
             if (subType != BsonBinarySubType.Binary && subType != BsonBinarySubType.OldBinary)
             {
-                var message = string.Format("ReadBytes requires the binary sub type to be Binary, not {2}.", subType);
+                var message = string.Format("ReadBytes requires the binary sub type to be Binary, not {0}.", subType);
                 throw new FormatException(message);
             }
 
@@ -393,6 +435,15 @@ namespace MongoDB.Bson.IO
             VerifyBsonType("ReadDateTime", BsonType.DateTime);
             State = GetNextState();
             return _currentValue.AsBsonDateTime.MillisecondsSinceEpoch;
+        }
+
+        /// <inheritdoc />
+        public override Decimal128 ReadDecimal128()
+        {
+            if (Disposed) { ThrowObjectDisposedException(); }
+            VerifyBsonType(nameof(ReadDecimal128), BsonType.Decimal128);
+            State = GetNextState();
+            return _currentValue.AsDecimal128;
         }
 
         /// <summary>
@@ -851,7 +902,7 @@ namespace MongoDB.Bson.IO
                 offset = -offset;
                 offsetSign = "-";
             }
-            var timeZone = TimeZone.CurrentTimeZone;
+            var timeZone = TimeZoneInfo.Local;
             var timeZoneName = local.IsDaylightSavingTime() ? timeZone.DaylightName : timeZone.StandardName;
             var dateTimeString = string.Format(
                 "{0} GMT{1}{2:D2}{3:D2} ({4})",
@@ -871,6 +922,14 @@ namespace MongoDB.Bson.IO
                 default:
                     throw new BsonInternalException("Unexpected ContextType.");
             }
+        }
+
+        private bool IsValidBinaryDataSubTypeString(string value)
+        {
+            return
+                value.Length >= 1 &&
+                value.Length <= 2 &&
+                HexUtils.IsValidHexString(value);
         }
 
         private BsonValue ParseBinDataConstructor()
@@ -905,24 +964,22 @@ namespace MongoDB.Bson.IO
         private BsonValue ParseBinDataExtendedJson()
         {
             VerifyToken(":");
-            var bytesToken = PopToken();
-            if (bytesToken.Type != JsonTokenType.String)
+
+            byte[] bytes;
+            BsonBinarySubType subType;
+
+            var nextToken = PopToken();
+            if (nextToken.Type == JsonTokenType.BeginObject)
             {
-                var message = string.Format("JSON reader expected a string but found '{0}'.", bytesToken.Lexeme);
-                throw new FormatException(message);
+                ParseBinDataExtendedJsonCanonical(out bytes, out subType);
             }
-            VerifyToken(",");
-            VerifyString("$type");
-            VerifyToken(":");
-            var subTypeToken = PopToken();
-            if (subTypeToken.Type != JsonTokenType.String)
+            else
             {
-                var message = string.Format("JSON reader expected a string but found '{0}'.", subTypeToken.Lexeme);
-                throw new FormatException(message);
+                ParseBinDataExtendedJsonLegacy(nextToken, out bytes, out subType);
             }
+
             VerifyToken("}");
-            var bytes = Convert.FromBase64String(bytesToken.StringValue);
-            var subType = (BsonBinarySubType)Convert.ToInt32(subTypeToken.StringValue, 16);
+
             GuidRepresentation guidRepresentation;
             switch (subType)
             {
@@ -930,7 +987,109 @@ namespace MongoDB.Bson.IO
                 case BsonBinarySubType.UuidStandard: guidRepresentation = GuidRepresentation.Standard; break;
                 default: guidRepresentation = GuidRepresentation.Unspecified; break;
             }
+
             return new BsonBinaryData(bytes, subType, guidRepresentation);
+        }
+
+        private void ParseBinDataExtendedJsonCanonical(out byte[] bytes, out BsonBinarySubType subType)
+        {
+            string base64String = null;
+            string subTypeString = null;
+
+            var nextToken = PopToken();
+            while (nextToken.Type != JsonTokenType.EndObject)
+            {
+                if (nextToken.Type != JsonTokenType.String && nextToken.Type != JsonTokenType.UnquotedString)
+                {
+                    var message = string.Format("JSON reader expected a string but found '{0}'.", nextToken.Lexeme);
+                    throw new FormatException(message);
+                }
+                var name = nextToken.StringValue;
+
+                nextToken = PopToken();
+                if (nextToken.Type != JsonTokenType.Colon)
+                {
+                    var message = string.Format("JSON reader expected ':' but found '{0}'.", nextToken.Lexeme);
+                    throw new FormatException(message);
+                }
+
+                nextToken = PopToken();
+                if (nextToken.Type != JsonTokenType.String)
+                {
+                    var message = string.Format("JSON reader expected a string but found '{0}'.", nextToken.Lexeme);
+                    throw new FormatException(message);
+                }
+                var value = nextToken.StringValue;
+
+                switch (name)
+                {
+                    case "base64": base64String = value; break;
+                    case "subType": subTypeString = value; break;
+                    default:
+                        var message = string.Format("JSON reader expected 'base64' or 'subType', but found '{0}'.", name);
+                        throw new FormatException(message);
+                }
+
+                nextToken = PopToken();
+                if (nextToken.Type != JsonTokenType.Comma && nextToken.Type != JsonTokenType.EndObject)
+                {
+                    var message = string.Format("JSON reader expected ',' or '}}' but found '{0}'.", nextToken.Lexeme);
+                    throw new FormatException(message);
+                }
+
+                if (nextToken.Type == JsonTokenType.Comma)
+                {
+                    nextToken = PopToken();
+                }
+            }
+
+            if (base64String == null)
+            {
+                var message = "JSON reader expected $binary to contain a 'base64' element.";
+                throw new FormatException(message);
+            }
+            if (subTypeString == null)
+            {
+                var message = "JSON reader expected $binary to contain a 'subType' element.";
+                throw new FormatException(message);
+            }
+            if (!IsValidBinaryDataSubTypeString(subTypeString))
+            {
+                var message = string.Format("JSON reader expected subType to be a one or two digit hex string, but found '{0}'.", subTypeString);
+                throw new FormatException(message);
+            }
+
+            bytes = Convert.FromBase64String(base64String);
+            subType = (BsonBinarySubType)HexUtils.ParseInt32(subTypeString);
+        }
+
+        private void ParseBinDataExtendedJsonLegacy(JsonToken nextToken, out byte[] bytes, out BsonBinarySubType subType)
+        { 
+            if (nextToken.Type != JsonTokenType.String)
+            {
+                var message = string.Format("JSON reader expected a string but found '{0}'.", nextToken.Lexeme);
+                throw new FormatException(message);
+            }
+            bytes = Convert.FromBase64String(nextToken.StringValue);
+
+            VerifyToken(",");
+            VerifyString("$type");
+            VerifyToken(":");
+
+            var subTypeToken = PopToken();
+            if (subTypeToken.Type == JsonTokenType.String)
+            {
+                subType = (BsonBinarySubType)Convert.ToInt32(subTypeToken.StringValue, 16);
+            }
+            else if (subTypeToken.Type == JsonTokenType.Int32 || subTypeToken.Type == JsonTokenType.Int64)
+            {
+                subType = (BsonBinarySubType)subTypeToken.Int32Value;
+            }
+            else
+            {
+                var message = string.Format("JSON reader expected a string or integer but found '{0}'.", subTypeToken.Lexeme);
+                throw new FormatException(message);
+            }
         }
 
         private BsonValue ParseHexDataConstructor()
@@ -984,7 +1143,7 @@ namespace MongoDB.Bson.IO
                     value = codeToken.StringValue;
                     return BsonType.JavaScript;
                 default:
-                    var message = string.Format("JSON reader expected ',' or '}' but found '{0}'.", codeToken.Lexeme);
+                    var message = string.Format("JSON reader expected ',' or '}}' but found '{0}'.", codeToken.Lexeme);
                     throw new FormatException(message);
             }
         }
@@ -999,8 +1158,17 @@ namespace MongoDB.Bson.IO
                 throw new FormatException(message);
             }
             VerifyToken(")");
-            var formats = new string[] { "yyyy-MM-ddK", "yyyy-MM-ddTHH:mm:ssK", "yyyy-MM-ddTHH:mm:ss.FFFFFFFK" };
-            var utcDateTime = DateTime.ParseExact(valueToken.StringValue, formats, null, DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal);
+            var value = valueToken.StringValue;
+            string[] formats = null;
+            if (!value.Contains(".") && value.Length < __fixedLengthIso8601Formats.Length)
+            {
+                formats = __fixedLengthIso8601Formats[value.Length];
+            }
+            if (formats == null)
+            {
+                formats = __variableLengthIso8601Formats;
+            }
+            var utcDateTime = DateTime.ParseExact(value, formats, null, DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal);
             return new BsonDateTime(utcDateTime);
         }
 
@@ -1017,16 +1185,37 @@ namespace MongoDB.Bson.IO
             else if (valueToken.Type == JsonTokenType.String)
             {
                 DateTime dateTime;
-                if (!DateTime.TryParse(valueToken.StringValue, out dateTime))
+                var dateTimeStyles = DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal;
+                if (!DateTime.TryParse(valueToken.StringValue, CultureInfo.InvariantCulture, dateTimeStyles, out dateTime))
                 {
                     var message = string.Format("Invalid $date string: '{0}'.", valueToken.StringValue);
                     throw new FormatException(message);
                 }
                 millisecondsSinceEpoch = BsonUtils.ToMillisecondsSinceEpoch(dateTime);
             }
+            else if (valueToken.Type == JsonTokenType.BeginObject)
+            {
+                VerifyToken("$numberLong");
+                VerifyToken(":");
+                var millisecondsSinceEpochToken = PopToken();
+                if (millisecondsSinceEpochToken.Type == JsonTokenType.String)
+                {
+                    millisecondsSinceEpoch = long.Parse(millisecondsSinceEpochToken.StringValue, CultureInfo.InvariantCulture);
+                }
+                else if (millisecondsSinceEpochToken.Type == JsonTokenType.Int32 || millisecondsSinceEpochToken.Type == JsonTokenType.Int64)
+                {
+                    millisecondsSinceEpoch = millisecondsSinceEpochToken.Int64Value;
+                }
+                else
+                {
+                    var message = string.Format("JSON reader expected an integer or a string for {{ $date : {{ $numberLong : ... }} }} but found a '{0}'.", valueToken.Lexeme);
+                    throw new FormatException(message);
+                }
+                VerifyToken("}");
+            }
             else
             {
-                var message = string.Format("JSON reader expected an integer or an ISO 8601 string for $date but found a '{0}'.", valueToken.Lexeme);
+                var message = string.Format("JSON reader expected an ISO 8601 string, an integer, or {{ $numberLong : ... }} for $date but found a '{0}'.", valueToken.Lexeme);
                 throw new FormatException(message);
             }
 
@@ -1123,9 +1312,13 @@ namespace MongoDB.Bson.IO
                     case "$date": _currentValue = ParseDateTimeExtendedJson(); return BsonType.DateTime;
                     case "$maxkey": case "$maxKey": _currentValue = ParseMaxKeyExtendedJson(); return BsonType.MaxKey;
                     case "$minkey": case "$minKey": _currentValue = ParseMinKeyExtendedJson(); return BsonType.MinKey;
+                    case "$numberDecimal": _currentValue = ParseNumberDecimalExtendedJson(); return BsonType.Decimal128;
+                    case "$numberDouble": _currentValue = ParseNumberDoubleExtendedJson(); return BsonType.Double;
+                    case "$numberInt": _currentValue = ParseNumberIntExtendedJson(); return BsonType.Int32;
                     case "$numberLong": _currentValue = ParseNumberLongExtendedJson(); return BsonType.Int64;
                     case "$oid": _currentValue = ParseObjectIdExtendedJson(); return BsonType.ObjectId;
-                    case "$regex": _currentValue = ParseRegularExpressionExtendedJson(); return BsonType.RegularExpression;
+                    case "$regex": _currentValue = ParseRegularExpressionExtendedJsonLegacy(); return BsonType.RegularExpression;
+                    case "$regularExpression": _currentValue = ParseRegularExpressionExtendedJsonCanonical(); return BsonType.RegularExpression;
                     case "$symbol": _currentValue = ParseSymbolExtendedJson(); return BsonType.Symbol;
                     case "$timestamp": _currentValue = ParseTimestampExtendedJson(); return BsonType.Timestamp;
                     case "$undefined": _currentValue = ParseUndefinedExtendedJson(); return BsonType.Undefined;
@@ -1329,6 +1522,9 @@ namespace MongoDB.Bson.IO
                 case "ISODate":
                     value = ParseISODateTimeConstructor();
                     return BsonType.DateTime;
+                case "NumberDecimal":
+                    value = ParseNumberDecimalConstructor();
+                    return BsonType.Decimal128;
                 case "NumberInt":
                     value = ParseNumberConstructor();
                     return BsonType.Int32;
@@ -1379,7 +1575,29 @@ namespace MongoDB.Bson.IO
                 throw new FormatException(message);
             }
             VerifyToken(")");
-            return new BsonInt32(value);
+            return (BsonInt32)value;
+        }
+
+        private BsonValue ParseNumberDecimalConstructor()
+        {
+            VerifyToken("(");
+            var valueToken = PopToken();
+            Decimal128 value;
+            if (valueToken.Type == JsonTokenType.String)
+            {
+                value = Decimal128.Parse(valueToken.StringValue);
+            }
+            else if (valueToken.Type == JsonTokenType.Int32 || valueToken.Type == JsonTokenType.Int64)
+            {
+                value = new Decimal128(valueToken.Int64Value);
+            }
+            else
+            {
+                var message = string.Format("JSON reader expected an integer or a string but found '{0}'.", valueToken.Lexeme);
+                throw new FormatException(message);
+            }
+            VerifyToken(")");
+            return (BsonDecimal128)value;
         }
 
         private BsonValue ParseNumberLongConstructor()
@@ -1401,20 +1619,104 @@ namespace MongoDB.Bson.IO
                 throw new FormatException(message);
             }
             VerifyToken(")");
-            return new BsonInt64(value);
+            return (BsonInt64)value;
+        }
+
+        private BsonValue ParseNumberDecimalExtendedJson()
+        {
+            VerifyToken(":");
+
+            Decimal128 value;
+            var valueToken = PopToken();
+            if (valueToken.Type == JsonTokenType.String)
+            {
+                value = Decimal128.Parse(valueToken.StringValue);
+            }
+            else if (valueToken.Type == JsonTokenType.Int32 || valueToken.Type == JsonTokenType.Int64)
+            {
+                value = new Decimal128(valueToken.Int64Value);
+            }
+            else
+            {
+                var message = string.Format("JSON reader expected a string or an integer but found '{0}'.", valueToken.Lexeme);
+                throw new FormatException(message);
+            }
+
+            VerifyToken("}");
+            return (BsonDecimal128)value;
+        }
+
+        private BsonValue ParseNumberDoubleExtendedJson()
+        {
+            VerifyToken(":");
+
+            double value;
+            var valueToken = PopToken();
+            if (valueToken.IsNumber)
+            {
+                value = valueToken.DoubleValue;
+            }
+            else if (valueToken.Type == JsonTokenType.String)
+            {
+                value = JsonConvert.ToDouble(valueToken.StringValue);
+            }
+            else
+            {
+                var message = string.Format("JSON reader expected a number or numeric string but found '{0}'.", valueToken.Lexeme);
+                throw new FormatException(message);
+            }
+
+            VerifyToken("}");
+
+            return (BsonDouble)value;
+        }
+
+        private BsonValue ParseNumberIntExtendedJson()
+        {
+            VerifyToken(":");
+
+            int value;
+            var valueToken = PopToken();
+            if (valueToken.Type == JsonTokenType.Int32)
+            {
+                value = valueToken.Int32Value;
+            }
+            else if (valueToken.Type == JsonTokenType.String)
+            {
+                value = JsonConvert.ToInt32(valueToken.StringValue);
+            }
+            else
+            {
+                var message = string.Format("JSON reader expected an integer but found '{0}'.", valueToken.Lexeme);
+                throw new FormatException(message);
+            }
+
+            VerifyToken("}");
+            return (BsonInt32)value;
         }
 
         private BsonValue ParseNumberLongExtendedJson()
         {
             VerifyToken(":");
+
+            long value;
             var valueToken = PopToken();
-            if (valueToken.Type != JsonTokenType.String)
+            if (valueToken.Type == JsonTokenType.String)
             {
-                var message = string.Format("JSON reader expected a string but found '{0}'.", valueToken.Lexeme);
+                value = long.Parse(valueToken.StringValue, CultureInfo.InvariantCulture);
+            }
+            else if (valueToken.Type == JsonTokenType.Int32 || valueToken.Type == JsonTokenType.Int64)
+            {
+                value = valueToken.Int64Value;
+            }
+            else
+            {
+                var message = string.Format("JSON reader expected a string or an integer but found '{0}'.", valueToken.Lexeme);
                 throw new FormatException(message);
             }
+
             VerifyToken("}");
-            return new BsonInt64(long.Parse(valueToken.StringValue));
+            return (BsonInt64)value;
         }
 
         private BsonValue ParseObjectIdConstructor()
@@ -1441,6 +1743,77 @@ namespace MongoDB.Bson.IO
             }
             VerifyToken("}");
             return new BsonObjectId(ObjectId.Parse(valueToken.StringValue));
+        }
+
+        private BsonValue ParseRegularExpressionExtendedJsonCanonical()
+        {
+            VerifyToken(":");
+            VerifyToken("{");
+
+            string pattern = null;
+            string options = null;
+
+            var nextToken = PopToken();
+            while (nextToken.Type != JsonTokenType.EndObject)
+            {
+                if (nextToken.Type != JsonTokenType.String && nextToken.Type != JsonTokenType.UnquotedString)
+                {
+                    var message = string.Format("JSON reader expected a string but found '{0}'.", nextToken.Lexeme);
+                    throw new FormatException(message);
+                }
+                var name = nextToken.StringValue;
+
+                VerifyToken(":");
+
+                nextToken = PopToken();
+                if (nextToken.Type != JsonTokenType.String)
+                {
+                    var message = string.Format("JSON reader expected a string but found '{0}'.", nextToken.Lexeme);
+                    throw new FormatException(message);
+                }
+                var value = nextToken.StringValue;
+
+                switch (name)
+                {
+                    case "pattern":
+                        pattern = value;
+                        break;
+                    case "options":
+                        options = value;
+                        break;
+                    default:
+                        var message = string.Format("JSON reader expected 'pattern' or 'options' but found '{0}'.", nextToken.Lexeme);
+                        throw new FormatException(message);
+                }
+
+                nextToken = PopToken();
+                if (nextToken.Type != JsonTokenType.Comma && nextToken.Type != JsonTokenType.EndObject)
+                {
+                    var message = string.Format("JSON reader expected ',' or '}}' but found '{0}'.", nextToken.Lexeme);
+                    throw new FormatException(message);
+                }
+
+                if (nextToken.Type == JsonTokenType.Comma)
+                {
+                    nextToken = PopToken();
+                }
+            }
+
+            VerifyToken("}");
+
+            if (pattern == null)
+            {
+                var message = "JSON reader expected $regularExpression to contain a 'pattern' element.";
+                throw new FormatException(message);
+            }
+
+            if (options == null)
+            {
+                var message = "JSON reader expected $regularExpression to contain an 'options' element.";
+                throw new FormatException(message);
+            }
+
+            return new BsonRegularExpression(pattern, options);
         }
 
         private BsonValue ParseRegularExpressionConstructor()
@@ -1472,7 +1845,7 @@ namespace MongoDB.Bson.IO
             return new BsonRegularExpression(patternToken.StringValue, options);
         }
 
-        private BsonValue ParseRegularExpressionExtendedJson()
+        private BsonValue ParseRegularExpressionExtendedJsonLegacy()
         {
             VerifyToken(":");
             var patternToken = PopToken();
@@ -1513,7 +1886,7 @@ namespace MongoDB.Bson.IO
                 throw new FormatException(message);
             }
             VerifyToken("}");
-            return new BsonString(nameToken.StringValue); // will be converted to a BsonSymbol at a higher level
+            return (BsonString)nameToken.StringValue; // will be converted to a BsonSymbol at a higher level
         }
 
         private BsonValue ParseTimestampConstructor()
@@ -1562,36 +1935,71 @@ namespace MongoDB.Bson.IO
 
         private BsonValue ParseTimestampExtendedJsonNewRepresentation()
         {
-            VerifyString("t");
-            VerifyToken(":");
-            var secondsSinceEpochToken = PopToken();
-            int secondsSinceEpoch;
-            if (secondsSinceEpochToken.IsNumber)
+            int? timestamp = null;
+            int? increment = null;
+
+            while (true)
             {
-                secondsSinceEpoch = secondsSinceEpochToken.Int32Value;
-            }
-            else
-            {
-                var message = string.Format("JSON reader expected an integer but found '{0}'.", secondsSinceEpochToken.Lexeme);
-                throw new FormatException(message);
-            }
-            VerifyToken(",");
-            VerifyString("i");
-            VerifyToken(":");
-            var incrementToken = PopToken();
-            int increment;
-            if (incrementToken.IsNumber)
-            {
-                increment = incrementToken.Int32Value;
-            }
-            else
-            {
-                var message = string.Format("JSON reader expected an integer but found '{0}'.", incrementToken.Lexeme);
-                throw new FormatException(message);
+                var token = PopToken();
+                if (token.Type != JsonTokenType.String && token.Type != JsonTokenType.UnquotedString)
+                {
+                    throw new FormatException($"JSON reader expected an element name but found '{token.Lexeme}'.");
+                }
+                var name = token.StringValue;
+
+                token = PopToken();
+                if (token.Type != JsonTokenType.Colon)
+                {
+                    throw new FormatException($"JSON reader expected ':' but found '{name}'.");
+                }
+
+                token = PopToken();
+                if (token.Type != JsonTokenType.Int32)
+                {
+                    throw new FormatException($"JSON reader expected an integer but found '{token.Lexeme}'.");
+                }
+                var value = token.Int32Value;
+
+                switch (name)
+                {
+                    case "t":
+                        timestamp = value;
+                        break;
+
+                    case "i":
+                        increment = value;
+                        break;
+
+                    default:
+                        throw new FormatException($"JSON reader expected 't' or 'i' element names but found '{name}'.");
+                }
+
+                token = PopToken();
+                if (token.Type == JsonTokenType.Comma)
+                {
+                    continue;
+                }
+                else if (token.Type == JsonTokenType.EndObject)
+                {
+                    break;
+                }
+                else
+                {
+                    throw new FormatException($"JSON reader expected ',' or '}}'  but found '{token.Lexeme}'.");
+                }
             }
             VerifyToken("}");
-            VerifyToken("}");
-            return new BsonTimestamp(secondsSinceEpoch, increment);
+
+            if (!timestamp.HasValue)
+            {
+                throw new FormatException("JSON reader did not find the required \"t\" element.");
+            }
+            if (!increment.HasValue)
+            {
+                throw new FormatException("JSON reader did not find the required \"i\" element.");
+            }
+
+            return new BsonTimestamp(timestamp.Value, increment.Value);
         }
 
         private BsonValue ParseTimestampExtendedJsonOldRepresentation(JsonToken valueToken)
@@ -1693,7 +2101,7 @@ namespace MongoDB.Bson.IO
             var token = PopToken();
             if ((token.Type != JsonTokenType.String && token.Type != JsonTokenType.UnquotedString) || token.StringValue != expectedString)
             {
-                var message = string.Format("JSON reader expected '{0}' but found '{1}'.", expectedString, token.StringValue);
+                var message = string.Format("JSON reader expected string '{0}' but found '{1}'.", expectedString, token.Lexeme);
                 throw new FormatException(message);
             }
         }

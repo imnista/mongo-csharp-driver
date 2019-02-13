@@ -1,4 +1,4 @@
-﻿/* Copyright 2010-2014 MongoDB Inc.
+/* Copyright 2010-present MongoDB Inc.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -19,6 +19,7 @@ using System.Linq.Expressions;
 using MongoDB.Bson.Serialization;
 using MongoDB.Bson.Serialization.Serializers;
 using MongoDB.Driver.Core.Misc;
+using MongoDB.Driver.Linq;
 using MongoDB.Driver.Linq.Expressions;
 using MongoDB.Driver.Linq.Processors;
 
@@ -39,7 +40,7 @@ namespace MongoDB.Driver
         /// <param name="fieldSerializer">The field serializer.</param>
         public RenderedFieldDefinition(string fieldName, IBsonSerializer fieldSerializer = null)
         {
-            _fieldName = Ensure.IsNotNull(fieldName, "fieldName");
+            _fieldName = Ensure.IsNotNull(fieldName, nameof(fieldName));
             _fieldSerializer = fieldSerializer;
         }
 
@@ -68,16 +69,33 @@ namespace MongoDB.Driver
     {
         private readonly string _fieldName;
         private readonly IBsonSerializer<TField> _fieldSerializer;
+        private readonly IBsonSerializer _underlyingSerializer;
+        private readonly IBsonSerializer<TField> _valueSerializer;
 
         /// <summary>
         /// Initializes a new instance of the <see cref="RenderedFieldDefinition{TField}" /> class.
         /// </summary>
         /// <param name="fieldName">The field name.</param>
         /// <param name="fieldSerializer">The field serializer.</param>
+        [Obsolete("Use the constructor that takes 4 arguments instead.")]
         public RenderedFieldDefinition(string fieldName, IBsonSerializer<TField> fieldSerializer)
+            : this(fieldName, fieldSerializer, fieldSerializer, fieldSerializer)
         {
-            _fieldName = Ensure.IsNotNull(fieldName, "fieldName");
-            _fieldSerializer = Ensure.IsNotNull(fieldSerializer, "fieldSerializer");
+        }
+
+        /// <summary>
+        /// Initializes a new instance of the <see cref="RenderedFieldDefinition{TField}" /> class.
+        /// </summary>
+        /// <param name="fieldName">The field name.</param>
+        /// <param name="fieldSerializer">The field serializer.</param>
+        /// <param name="valueSerializer">The value serializer.</param>
+        /// <param name="underlyingSerializer">The underlying serializer.</param>
+        public RenderedFieldDefinition(string fieldName, IBsonSerializer<TField> fieldSerializer, IBsonSerializer<TField> valueSerializer, IBsonSerializer underlyingSerializer)
+        {
+            _fieldName = Ensure.IsNotNull(fieldName, nameof(fieldName));
+            _fieldSerializer = fieldSerializer;
+            _valueSerializer = Ensure.IsNotNull(valueSerializer, nameof(valueSerializer));
+            _underlyingSerializer = underlyingSerializer;
         }
 
         /// <summary>
@@ -94,6 +112,22 @@ namespace MongoDB.Driver
         public IBsonSerializer<TField> FieldSerializer
         {
             get { return _fieldSerializer; }
+        }
+
+        /// <summary>
+        /// Gets the underlying serializer.
+        /// </summary>
+        public IBsonSerializer UnderlyingSerializer
+        {
+            get { return _underlyingSerializer; }
+        }
+
+        /// <summary>
+        /// Gets the value serializer.
+        /// </summary>
+        public IBsonSerializer<TField> ValueSerializer
+        {
+            get { return _valueSerializer; }
         }
     }
 
@@ -137,12 +171,27 @@ namespace MongoDB.Driver
     public abstract class FieldDefinition<TDocument, TField>
     {
         /// <summary>
-        /// Renders the field to a <see cref="String"/>.
+        /// Renders the field to a <see cref="RenderedFieldDefinition{TField}"/>.
         /// </summary>
         /// <param name="documentSerializer">The document serializer.</param>
         /// <param name="serializerRegistry">The serializer registry.</param>
-        /// <returns>A <see cref="String"/>.</returns>
+        /// <returns>A <see cref="RenderedFieldDefinition{TField}"/>.</returns>
         public abstract RenderedFieldDefinition<TField> Render(IBsonSerializer<TDocument> documentSerializer, IBsonSerializerRegistry serializerRegistry);
+
+        /// <summary>
+        /// Renders the field to a <see cref="RenderedFieldDefinition{TField}"/>.
+        /// </summary>
+        /// <param name="documentSerializer">The document serializer.</param>
+        /// <param name="serializerRegistry">The serializer registry.</param>
+        /// <param name="allowScalarValueForArrayField">Whether a scalar value is allowed for an array field.</param>
+        /// <returns>A <see cref="RenderedFieldDefinition{TField}"/>.</returns>
+        public virtual RenderedFieldDefinition<TField> Render(
+            IBsonSerializer<TDocument> documentSerializer, 
+            IBsonSerializerRegistry serializerRegistry,
+            bool allowScalarValueForArrayField)
+        {
+            return Render(documentSerializer, serializerRegistry); // ignore allowScalarValueForArrayField if not overridden by subclass
+        }
 
         /// <summary>
         /// Performs an implicit conversion from <see cref="System.String" /> to <see cref="FieldDefinition{TDocument, TField}" />.
@@ -160,6 +209,18 @@ namespace MongoDB.Driver
 
             return new StringFieldDefinition<TDocument, TField>(fieldName, null);
         }
+
+        /// <summary>
+        /// Performs an implicit conversion from <see cref="FieldDefinition{TDocument, TField}"/> to <see cref="FieldDefinition{TDocument}"/>.
+        /// </summary>
+        /// <param name="field">The field.</param>
+        /// <returns>
+        /// The result of the conversion.
+        /// </returns>
+        public static implicit operator FieldDefinition<TDocument>(FieldDefinition<TDocument, TField> field)
+        {
+            return new UntypedFieldDefinitionAdapter<TDocument, TField>(field);
+        }
     }
 
     /// <summary>
@@ -176,7 +237,7 @@ namespace MongoDB.Driver
         /// <param name="expression">The expression.</param>
         public ExpressionFieldDefinition(LambdaExpression expression)
         {
-            _expression = Ensure.IsNotNull(expression, "expression");
+            _expression = Ensure.IsNotNull(expression, nameof(expression));
 
             if (expression.Parameters.Count != 1)
             {
@@ -200,18 +261,20 @@ namespace MongoDB.Driver
         /// <inheritdoc />
         public override RenderedFieldDefinition Render(IBsonSerializer<TDocument> documentSerializer, IBsonSerializerRegistry serializerRegistry)
         {
-            var binder = new SerializationInfoBinder(serializerRegistry);
-            var parameterSerializationInfo = new BsonSerializationInfo(null, documentSerializer, documentSerializer.ValueType);
-            var parameterExpression = new SerializationExpression(_expression.Parameters[0], parameterSerializationInfo);
-            binder.RegisterParameterReplacement(_expression.Parameters[0], parameterExpression);
-            var bound = binder.Bind(_expression.Body) as ISerializationExpression;
-            if (bound == null)
+            var bindingContext = new PipelineBindingContext(serializerRegistry);
+            var lambda = ExpressionHelper.GetLambda(PartialEvaluator.Evaluate(_expression));
+            var parameterExpression = new DocumentExpression(documentSerializer);
+            bindingContext.AddExpressionMapping(lambda.Parameters[0], parameterExpression);
+            var bound = bindingContext.Bind(lambda.Body);
+            bound = FieldExpressionFlattener.FlattenFields(bound);
+            IFieldExpression field;
+            if (!ExpressionHelper.TryGetExpression(bound, out field))
             {
                 var message = string.Format("Unable to determine the serialization information for {0}.", _expression);
                 throw new InvalidOperationException(message);
             }
 
-            return new RenderedFieldDefinition(bound.SerializationInfo.ElementName, bound.SerializationInfo.Serializer);
+            return new RenderedFieldDefinition(field.FieldName, field.Serializer);
         }
     }
 
@@ -230,7 +293,7 @@ namespace MongoDB.Driver
         /// <param name="expression">The expression.</param>
         public ExpressionFieldDefinition(Expression<Func<TDocument, TField>> expression)
         {
-            _expression = Ensure.IsNotNull(expression, "expression");
+            _expression = Ensure.IsNotNull(expression, nameof(expression));
         }
 
         /// <summary>
@@ -244,18 +307,33 @@ namespace MongoDB.Driver
         /// <inheritdoc />
         public override RenderedFieldDefinition<TField> Render(IBsonSerializer<TDocument> documentSerializer, IBsonSerializerRegistry serializerRegistry)
         {
-            var binder = new SerializationInfoBinder(serializerRegistry);
-            var parameterSerializationInfo = new BsonSerializationInfo(null, documentSerializer, documentSerializer.ValueType);
-            var parameterExpression = new SerializationExpression(_expression.Parameters[0], parameterSerializationInfo);
-            binder.RegisterParameterReplacement(_expression.Parameters[0], parameterExpression);
-            var bound = binder.Bind(_expression.Body) as ISerializationExpression;
-            if (bound == null)
+            return Render(documentSerializer, serializerRegistry, allowScalarValueForArrayField: false);
+        }
+
+        /// <inheritdoc />
+        public override RenderedFieldDefinition<TField> Render(
+            IBsonSerializer<TDocument> documentSerializer, 
+            IBsonSerializerRegistry serializerRegistry,
+            bool allowScalarValueForArrayField)
+        {
+            var lambda = (LambdaExpression)PartialEvaluator.Evaluate(_expression);
+            var bindingContext = new PipelineBindingContext(serializerRegistry);
+            var parameterExpression = new DocumentExpression(documentSerializer);
+            bindingContext.AddExpressionMapping(lambda.Parameters[0], parameterExpression);
+            var bound = bindingContext.Bind(lambda.Body);
+            bound = FieldExpressionFlattener.FlattenFields(bound);
+            IFieldExpression field;
+            if (!Linq.ExpressionHelper.TryGetExpression(bound, out field))
             {
                 var message = string.Format("Unable to determine the serialization information for {0}.", _expression);
                 throw new InvalidOperationException(message);
             }
 
-            return new RenderedFieldDefinition<TField>(bound.SerializationInfo.ElementName, (IBsonSerializer<TField>)bound.SerializationInfo.Serializer);
+            var underlyingSerializer = field.Serializer;
+            var fieldSerializer = underlyingSerializer as IBsonSerializer<TField>;
+            var valueSerializer = (IBsonSerializer<TField>)FieldValueSerializerHelper.GetSerializerForValueType(underlyingSerializer, serializerRegistry, typeof(TField), allowScalarValueForArrayField);
+
+            return new RenderedFieldDefinition<TField>(field.FieldName, fieldSerializer, valueSerializer, underlyingSerializer);
         }
     }
 
@@ -273,7 +351,7 @@ namespace MongoDB.Driver
         /// <param name="fieldName">Name of the field.</param>
         public StringFieldDefinition(string fieldName)
         {
-            _fieldName = Ensure.IsNotNull(fieldName, "fieldName");
+            _fieldName = Ensure.IsNotNull(fieldName, nameof(fieldName));
         }
 
         /// <inheritdoc />
@@ -304,20 +382,43 @@ namespace MongoDB.Driver
         /// <param name="fieldSerializer">The field serializer.</param>
         public StringFieldDefinition(string fieldName, IBsonSerializer<TField> fieldSerializer = null)
         {
-            _fieldName = Ensure.IsNotNull(fieldName, "fieldName");
+            _fieldName = Ensure.IsNotNull(fieldName, nameof(fieldName));
             _fieldSerializer = fieldSerializer;
         }
 
         /// <inheritdoc />
         public override RenderedFieldDefinition<TField> Render(IBsonSerializer<TDocument> documentSerializer, IBsonSerializerRegistry serializerRegistry)
         {
-            string resolvedName;
-            IBsonSerializer resolvedSerializer;
-            StringFieldDefinitionHelper.Resolve<TDocument>(_fieldName, documentSerializer, out resolvedName, out resolvedSerializer);
+            return Render(documentSerializer, serializerRegistry, allowScalarValueForArrayField: false);
+        }
 
-            return new RenderedFieldDefinition<TField>(
-                resolvedName,
-                _fieldSerializer ?? (resolvedSerializer as IBsonSerializer<TField>) ?? serializerRegistry.GetSerializer<TField>());
+        /// <inheritdoc />
+        public override RenderedFieldDefinition<TField> Render(
+            IBsonSerializer<TDocument> documentSerializer, 
+            IBsonSerializerRegistry serializerRegistry,
+            bool allowScalarValueForArrayField)
+        {
+            string resolvedName;
+            IBsonSerializer underlyingSerializer;
+            StringFieldDefinitionHelper.Resolve<TDocument>(_fieldName, documentSerializer, out resolvedName, out underlyingSerializer);
+
+            var fieldSerializer = underlyingSerializer as IBsonSerializer<TField>;
+
+            IBsonSerializer<TField> valueSerializer;
+            if (_fieldSerializer != null)
+            {
+                valueSerializer = _fieldSerializer;
+            }
+            else if (underlyingSerializer != null)
+            {
+                valueSerializer = (IBsonSerializer<TField>)FieldValueSerializerHelper.GetSerializerForValueType(underlyingSerializer, serializerRegistry, typeof(TField), allowScalarValueForArrayField);
+            }
+            else
+            {
+                valueSerializer = serializerRegistry.GetSerializer<TField>();
+            }
+
+            return new RenderedFieldDefinition<TField>(resolvedName, fieldSerializer, valueSerializer, underlyingSerializer);
         }
     }
 
@@ -327,6 +428,7 @@ namespace MongoDB.Driver
         {
             resolvedFieldName = fieldName;
             resolvedFieldSerializer = null;
+
             var documentSerializer = serializer as IBsonDocumentSerializer;
             if (documentSerializer == null)
             {
@@ -401,6 +503,22 @@ namespace MongoDB.Driver
             }
 
             resolvedFieldName = string.Join(".", nameParts);
+        }
+    }
+
+    internal class UntypedFieldDefinitionAdapter<TDocument, TField> : FieldDefinition<TDocument>
+    {
+        private readonly FieldDefinition<TDocument, TField> _adaptee;
+
+        public UntypedFieldDefinitionAdapter(FieldDefinition<TDocument, TField> adaptee)
+        {
+            _adaptee = Ensure.IsNotNull(adaptee, nameof(adaptee));
+        }
+
+        public override RenderedFieldDefinition Render(IBsonSerializer<TDocument> documentSerializer, IBsonSerializerRegistry serializerRegistry)
+        {
+            var rendered = _adaptee.Render(documentSerializer, serializerRegistry);
+            return new RenderedFieldDefinition(rendered.FieldName, rendered.UnderlyingSerializer);
         }
     }
 }

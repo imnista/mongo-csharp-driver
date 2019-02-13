@@ -1,4 +1,4 @@
-﻿/* Copyright 2010-2014 MongoDB Inc.
+﻿/* Copyright 2010-present MongoDB Inc.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -21,13 +21,15 @@ namespace MongoDB.Bson
     /// <summary>
     /// Represents BSON binary data.
     /// </summary>
+#if NET452
     [Serializable]
+#endif
     public class BsonBinaryData : BsonValue, IComparable<BsonBinaryData>, IEquatable<BsonBinaryData>
     {
         // private fields
-        private byte[] _bytes;
-        private BsonBinarySubType _subType;
-        private GuidRepresentation _guidRepresentation; // only relevant if subType is UuidStandard or UuidLegacy
+        private readonly byte[] _bytes;
+        private readonly BsonBinarySubType _subType;
+        private readonly GuidRepresentation _guidRepresentation; // only relevant if subType is UuidStandard or UuidLegacy
 
         // constructors
         /// <summary>
@@ -45,7 +47,7 @@ namespace MongoDB.Bson
         /// <param name="bytes">The binary data.</param>
         /// <param name="subType">The binary data subtype.</param>
         public BsonBinaryData(byte[] bytes, BsonBinarySubType subType)
-            : this(bytes, subType, GuidRepresentation.Unspecified)
+            : this(bytes, subType, subType == BsonBinarySubType.UuidStandard ? GuidRepresentation.Standard : GuidRepresentation.Unspecified)
         {
         }
 
@@ -59,7 +61,7 @@ namespace MongoDB.Bson
         {
             if (bytes == null)
             {
-                throw new ArgumentNullException("bytes");
+                throw new ArgumentNullException(nameof(bytes));
             }
             if (subType == BsonBinarySubType.UuidStandard || subType == BsonBinarySubType.UuidLegacy)
             {
@@ -68,15 +70,29 @@ namespace MongoDB.Bson
                     var message = string.Format(
                         "Length must be 16, not {0}, when subType is {1}.",
                         bytes.Length, subType);
-                    throw new ArgumentException(message);
+                    throw new ArgumentException(message, nameof(bytes));
                 }
-                var expectedSubType = (guidRepresentation == GuidRepresentation.Standard) ? BsonBinarySubType.UuidStandard : BsonBinarySubType.UuidLegacy;
+                BsonBinarySubType expectedSubType;
+                switch (guidRepresentation)
+                {
+                    case GuidRepresentation.CSharpLegacy:
+                    case GuidRepresentation.JavaLegacy:
+                    case GuidRepresentation.PythonLegacy:
+                    case GuidRepresentation.Unspecified:
+                        expectedSubType = BsonBinarySubType.UuidLegacy;
+                        break;
+
+                    case GuidRepresentation.Standard:
+                        expectedSubType = BsonBinarySubType.UuidStandard;
+                        break;
+
+                    default:
+                        throw new ArgumentException($"Invalid guidRepresentation: {guidRepresentation}.", nameof(guidRepresentation));
+                }
+
                 if (subType != expectedSubType)
                 {
-                    var message = string.Format(
-                        "SubType must be {0}, not {1}, when GuidRepresentation is {2}.",
-                        expectedSubType, subType, GuidRepresentation);
-                    throw new ArgumentException(message);
+                    throw new ArgumentException($"GuidRepresentation {guidRepresentation} is only valid with subType {expectedSubType}, not with subType {subType}.", nameof(guidRepresentation));
                 }
             }
             else
@@ -84,9 +100,9 @@ namespace MongoDB.Bson
                 if (guidRepresentation != GuidRepresentation.Unspecified)
                 {
                     var message = string.Format(
-                        "GuidRepresentation must be Unspecified, not {0}, when SubType is not UuidStandard or UuidLegacy.",
+                        "GuidRepresentation must be Unspecified, not {0}, when subType is not UuidStandard or UuidLegacy.",
                         guidRepresentation);
-                    throw new ArgumentException(message);
+                    throw new ArgumentException(message, nameof(guidRepresentation));
                 }
             }
             _bytes = bytes;

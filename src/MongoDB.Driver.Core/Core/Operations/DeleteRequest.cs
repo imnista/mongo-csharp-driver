@@ -1,4 +1,4 @@
-﻿/* Copyright 2010-2014 MongoDB Inc.
+/* Copyright 2010-present MongoDB Inc.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -14,6 +14,7 @@
 */
 
 using MongoDB.Bson;
+using MongoDB.Driver.Core.Connections;
 using MongoDB.Driver.Core.Misc;
 
 namespace MongoDB.Driver.Core.Operations
@@ -24,6 +25,7 @@ namespace MongoDB.Driver.Core.Operations
     public sealed class DeleteRequest : WriteRequest
     {
         // fields
+        private Collation _collation;
         private readonly BsonDocument _filter;
         private int _limit;
 
@@ -35,11 +37,20 @@ namespace MongoDB.Driver.Core.Operations
         public DeleteRequest(BsonDocument filter)
             : base(WriteRequestType.Delete)
         {
-            _filter = Ensure.IsNotNull(filter, "filter");
+            _filter = Ensure.IsNotNull(filter, nameof(filter));
             _limit = 1;
         }
 
         // properties
+        /// <summary>
+        /// Gets or sets the collation.
+        /// </summary>
+        public Collation Collation
+        {
+            get { return _collation; }
+            set { _collation = value; }
+        }
+
         /// <summary>
         /// Gets or sets the filter.
         /// </summary>
@@ -61,6 +72,13 @@ namespace MongoDB.Driver.Core.Operations
         {
             get { return _limit; }
             set { _limit = value; }
+        }
+
+        // public methods
+        /// <inheritdoc />
+        public override bool IsRetryable(ConnectionDescription connectionDescription)
+        {
+            return _limit != 0;
         }
     }
 }

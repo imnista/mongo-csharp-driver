@@ -1,4 +1,4 @@
-﻿/* Copyright 2010-2014 MongoDB Inc.
+/* Copyright 2010-present MongoDB Inc.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -14,6 +14,7 @@
 */
 
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Linq.Expressions;
 using System.Reflection;
@@ -77,7 +78,7 @@ namespace MongoDB.Driver.Linq
             {
                 throw new ArgumentNullException("expression");
             }
-            if (!typeof(IQueryable<T>).IsAssignableFrom(expression.Type))
+            if (!typeof(IQueryable<T>).GetTypeInfo().IsAssignableFrom(expression.Type))
             {
                 throw new ArgumentOutOfRangeException("expression");
             }
@@ -96,7 +97,7 @@ namespace MongoDB.Driver.Linq
             {
                 throw new ArgumentNullException("expression");
             }
-            var elementType = TypeHelper.GetElementType(expression.Type);
+            var elementType = GetElementType(expression.Type);
             try
             {
                 var queryableType = typeof(MongoQueryable<>).MakeGenericType(elementType);
@@ -120,7 +121,7 @@ namespace MongoDB.Driver.Linq
             {
                 throw new ArgumentNullException("expression");
             }
-            if (!typeof(TResult).IsAssignableFrom(expression.Type))
+            if (!typeof(TResult).GetTypeInfo().IsAssignableFrom(expression.Type))
             {
                 throw new ArgumentException("Argument expression is not valid.");
             }
@@ -150,6 +151,56 @@ namespace MongoDB.Driver.Linq
 
             var translatedQuery = MongoQueryTranslator.Translate(this, expression);
             return translatedQuery.Execute();
+        }
+
+        private static Type GetElementType(Type seqType)
+        {
+            Type ienum = FindIEnumerable(seqType);
+            if (ienum == null) { return seqType; }
+            return ienum.GetTypeInfo().GetGenericArguments()[0];
+        }
+
+        private static Type FindIEnumerable(Type seqType)
+        {
+            if (seqType == null || seqType == typeof(string))
+            {
+                return null;
+            }
+
+            var seqTypeInfo = seqType.GetTypeInfo();
+            if (seqTypeInfo.IsArray)
+            {
+                return typeof(IEnumerable<>).MakeGenericType(seqTypeInfo.GetElementType());
+            }
+
+            if (seqTypeInfo.IsGenericType)
+            {
+                foreach (Type arg in seqTypeInfo.GetGenericArguments())
+                {
+                    Type ienum = typeof(IEnumerable<>).MakeGenericType(arg);
+                    if (ienum.GetTypeInfo().IsAssignableFrom(seqType))
+                    {
+                        return ienum;
+                    }
+                }
+            }
+
+            Type[] ifaces = seqTypeInfo.GetInterfaces();
+            if (ifaces != null && ifaces.Length > 0)
+            {
+                foreach (Type iface in ifaces)
+                {
+                    Type ienum = FindIEnumerable(iface);
+                    if (ienum != null) { return ienum; }
+                }
+            }
+
+            if (seqTypeInfo.BaseType != null && seqTypeInfo.BaseType != typeof(object))
+            {
+                return FindIEnumerable(seqTypeInfo.BaseType);
+            }
+
+            return null;
         }
     }
 }

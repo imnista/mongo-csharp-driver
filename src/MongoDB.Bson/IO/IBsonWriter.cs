@@ -1,4 +1,4 @@
-﻿/* Copyright 2010-2014 MongoDB Inc.
+﻿/* Copyright 2010-present MongoDB Inc.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -20,9 +20,19 @@ namespace MongoDB.Bson.IO
     /// <summary>
     /// Represents a BSON writer.
     /// </summary>
+    /// <seealso cref="System.IDisposable" />
     public interface IBsonWriter : IDisposable
     {
         // properties
+        /// <summary>
+        /// Gets the position.
+        /// Not all writers are able to report the position. Those that can't simply return zero.
+        /// </summary>
+        /// <value>
+        /// The position.
+        /// </value>
+        long Position { get; }
+
         /// <summary>
         /// Gets the current serialization depth.
         /// </summary>
@@ -33,7 +43,7 @@ namespace MongoDB.Bson.IO
         /// </summary>
         BsonWriterSettings Settings { get; }
 
-            // methods
+        // methods
         /// <summary>
         /// Gets the current state of the writer.
         /// </summary>
@@ -57,10 +67,21 @@ namespace MongoDB.Bson.IO
         void PopElementNameValidator();
 
         /// <summary>
+        /// Pops the settings.
+        /// </summary>
+        void PopSettings();
+
+        /// <summary>
         /// Pushes the element name validator.
         /// </summary>
         /// <param name="validator">The validator.</param>
         void PushElementNameValidator(IElementNameValidator validator);
+
+        /// <summary>
+        /// Pushes new settings for the writer.
+        /// </summary>
+        /// <param name="configurator">The settings configurator.</param>
+        void PushSettings(Action<BsonWriterSettings> configurator);
 
         /// <summary>
         /// Writes BSON binary data to the writer.
@@ -85,6 +106,12 @@ namespace MongoDB.Bson.IO
         /// </summary>
         /// <param name="value">The number of milliseconds since the Unix epoch.</param>
         void WriteDateTime(long value);
+
+        /// <summary>
+        /// Writes a BSON Decimal128 to the writer.
+        /// </summary>
+        /// <param name="value">The <see cref="Decimal128"/> value.</param>
+        void WriteDecimal128(Decimal128 value);
 
         /// <summary>
         /// Writes a BSON Double to the writer.

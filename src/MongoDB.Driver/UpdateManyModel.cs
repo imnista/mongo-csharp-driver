@@ -1,4 +1,4 @@
-﻿/* Copyright 2010-2014 MongoDB Inc.
+/* Copyright 2010-present MongoDB Inc.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -13,13 +13,9 @@
 * limitations under the License.
 */
 
+using MongoDB.Driver.Core.Misc;
 using System;
 using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
-using MongoDB.Driver.Core.Misc;
-using MongoDB.Driver.Core.Operations;
 
 namespace MongoDB.Driver
 {
@@ -27,10 +23,14 @@ namespace MongoDB.Driver
     /// Model for updating many documents.
     /// </summary>
     /// <typeparam name="TDocument">The type of the document.</typeparam>
+#if NET452
     [Serializable]
+#endif
     public sealed class UpdateManyModel<TDocument> : WriteModel<TDocument>
     {
         // fields
+        private IEnumerable<ArrayFilterDefinition> _arrayFilters;
+        private Collation _collation;
         private readonly FilterDefinition<TDocument> _filter;
         private bool _isUpsert;
         private readonly UpdateDefinition<TDocument> _update;
@@ -43,11 +43,32 @@ namespace MongoDB.Driver
         /// <param name="update">The update.</param>
         public UpdateManyModel(FilterDefinition<TDocument> filter, UpdateDefinition<TDocument> update)
         {
-            _filter = Ensure.IsNotNull(filter, "filter");
-            _update = Ensure.IsNotNull(update, "update");
+            _filter = Ensure.IsNotNull(filter, nameof(filter));
+            _update = Ensure.IsNotNull(update, nameof(update));
         }
 
         // properties
+        /// <summary>
+        /// Gets or sets the array filters.
+        /// </summary>
+        /// <value>
+        /// The array filters.
+        /// </value>
+        public IEnumerable<ArrayFilterDefinition> ArrayFilters
+        {
+            get { return _arrayFilters; }
+            set { _arrayFilters = value; }
+        }
+
+        /// <summary>
+        /// Gets or sets the collation.
+        /// </summary>
+        public Collation Collation
+        {
+            get { return _collation; }
+            set { _collation = value; }
+        }
+
         /// <summary>
         /// Gets the filter.
         /// </summary>

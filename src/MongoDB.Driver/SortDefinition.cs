@@ -1,4 +1,4 @@
-﻿/* Copyright 2010-2014 MongoDB Inc.
+/* Copyright 2010-present MongoDB Inc.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -18,7 +18,6 @@ using System.Linq.Expressions;
 using MongoDB.Bson;
 using MongoDB.Bson.Serialization;
 using MongoDB.Driver.Core.Misc;
-using MongoDB.Driver.Linq.Utils;
 
 namespace MongoDB.Driver
 {
@@ -100,7 +99,7 @@ namespace MongoDB.Driver
         /// <param name="document">The document.</param>
         public BsonDocumentSortDefinition(BsonDocument document)
         {
-            _document = Ensure.IsNotNull(document, "document");
+            _document = Ensure.IsNotNull(document, nameof(document));
         }
 
         /// <summary>
@@ -132,7 +131,7 @@ namespace MongoDB.Driver
         /// <param name="json">The json.</param>
         public JsonSortDefinition(string json)
         {
-            _json = Ensure.IsNotNullOrEmpty(json, "json");
+            _json = Ensure.IsNotNullOrEmpty(json, nameof(json));
         }
 
         /// <summary>
@@ -164,7 +163,7 @@ namespace MongoDB.Driver
         /// <param name="obj">The object.</param>
         public ObjectSortDefinition(object obj)
         {
-            _obj = Ensure.IsNotNull(obj, "obj");
+            _obj = Ensure.IsNotNull(obj, nameof(obj));
         }
 
         /// <summary>

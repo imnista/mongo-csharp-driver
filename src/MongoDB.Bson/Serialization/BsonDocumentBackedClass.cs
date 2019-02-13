@@ -1,4 +1,4 @@
-﻿/* Copyright 2010-2014 MongoDB Inc.
+/* Copyright 2010-present MongoDB Inc.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -14,6 +14,7 @@
 */
 
 using System;
+using System.Collections.Generic;
 
 namespace MongoDB.Bson.Serialization
 {
@@ -70,6 +71,31 @@ namespace MongoDB.Bson.Serialization
         /// </summary>
         /// <typeparam name="T">The type of the value.</typeparam>
         /// <param name="memberName">The member name.</param>
+        /// <returns>The value.</returns>
+        protected T GetValue<T>(string memberName)
+        {
+            BsonSerializationInfo info;
+            if (!_serializer.TryGetMemberSerializationInfo(memberName, out info))
+            {
+                var message = string.Format("The member {0} does not exist.", memberName);
+                throw new ArgumentException(message, "memberName");
+            }
+
+            BsonValue bsonValue;
+            if (!_backingDocument.TryGetValue(info.ElementName, out bsonValue))
+            {
+                var message = string.Format("The backing document does not contain an element named '{0}'.", info.ElementName);
+                throw new KeyNotFoundException(message);
+            }
+
+            return (T)info.DeserializeValue(bsonValue);
+        }
+
+        /// <summary>
+        /// Gets the value from the backing document.
+        /// </summary>
+        /// <typeparam name="T">The type of the value.</typeparam>
+        /// <param name="memberName">The member name.</param>
         /// <param name="defaultValue">The default value.</param>
         /// <returns>The value.</returns>
         protected T GetValue<T>(string memberName, T defaultValue)
@@ -101,7 +127,7 @@ namespace MongoDB.Bson.Serialization
             if (!_serializer.TryGetMemberSerializationInfo(memberName, out info))
             {
                 var message = string.Format("The member {0} does not exist.", memberName);
-                throw new ArgumentException("memberName", message);
+                throw new ArgumentException(message, "memberName");
             }
 
             var bsonValue = info.SerializeValue(value);

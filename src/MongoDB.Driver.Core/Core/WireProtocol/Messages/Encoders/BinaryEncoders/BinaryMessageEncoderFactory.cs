@@ -1,4 +1,4 @@
-﻿/* Copyright 2013-2014 MongoDB Inc.
+/* Copyright 2013-present MongoDB Inc.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -37,11 +37,31 @@ namespace MongoDB.Driver.Core.WireProtocol.Messages.Encoders.BinaryEncoders
         /// <param name="encoderSettings">The encoder settings.</param>
         public BinaryMessageEncoderFactory(Stream stream, MessageEncoderSettings encoderSettings)
         {
-            _stream = Ensure.IsNotNull(stream, "stream");
+            _stream = Ensure.IsNotNull(stream, nameof(stream));
             _encoderSettings = encoderSettings; // can be null
         }
 
         // methods
+        /// <inheritdoc/>
+        public IMessageEncoder GetCommandMessageEncoder()
+        {
+            return new CommandMessageBinaryEncoder(_stream, _encoderSettings);
+        }
+
+        /// <inheritdoc/>
+        public IMessageEncoder GetCommandRequestMessageEncoder()
+        {
+            var wrappedEncoder = (CommandMessageBinaryEncoder)GetCommandMessageEncoder();
+            return new CommandRequestMessageBinaryEncoder(wrappedEncoder);
+        }
+
+        /// <inheritdoc/>
+        public IMessageEncoder GetCommandResponseMessageEncoder()
+        {
+            var wrappedEncoder = (CommandMessageBinaryEncoder)GetCommandMessageEncoder();
+            return new CommandResponseMessageBinaryEncoder(wrappedEncoder);
+        }
+
         /// <inheritdoc/>
         public IMessageEncoder GetDeleteMessageEncoder()
         {

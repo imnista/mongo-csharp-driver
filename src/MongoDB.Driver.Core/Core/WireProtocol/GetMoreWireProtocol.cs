@@ -1,4 +1,4 @@
-﻿/* Copyright 2013-2014 MongoDB Inc.
+/* Copyright 2013-present MongoDB Inc.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -44,11 +44,11 @@ namespace MongoDB.Driver.Core.WireProtocol
             IBsonSerializer<TDocument> serializer,
             MessageEncoderSettings messageEncoderSettings)
         {
-            _collectionNamespace = Ensure.IsNotNull(collectionNamespace, "collectionNamespace");
-            _query = Ensure.IsNotNull(query, "query");
+            _collectionNamespace = Ensure.IsNotNull(collectionNamespace, nameof(collectionNamespace));
+            _query = Ensure.IsNotNull(query, nameof(query));
             _cursorId = cursorId;
-            _batchSize = Ensure.IsGreaterThanOrEqualToZero(batchSize, "batchSize");
-            _serializer = Ensure.IsNotNull(serializer, "serializer");
+            _batchSize = Ensure.IsGreaterThanOrEqualToZero(batchSize, nameof(batchSize));
+            _serializer = Ensure.IsNotNull(serializer, nameof(serializer));
             _messageEncoderSettings = messageEncoderSettings;
         }
 
@@ -60,6 +60,15 @@ namespace MongoDB.Driver.Core.WireProtocol
                 _collectionNamespace,
                 _cursorId,
                 _batchSize);
+        }
+
+        public CursorBatch<TDocument> Execute(IConnection connection, CancellationToken cancellationToken)
+        {
+            var message = CreateMessage();
+            connection.SendMessage(message, _messageEncoderSettings, cancellationToken);
+            var encoderSelector = new ReplyMessageEncoderSelector<TDocument>(_serializer);
+            var reply = connection.ReceiveMessage(message.RequestId, encoderSelector, _messageEncoderSettings, cancellationToken);
+            return ProcessReply(connection.ConnectionId, (ReplyMessage<TDocument>)reply);
         }
 
         public async Task<CursorBatch<TDocument>> ExecuteAsync(IConnection connection, CancellationToken cancellationToken)

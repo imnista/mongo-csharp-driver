@@ -4,6 +4,7 @@ draft = false
 title = "Expressions"
 [menu.main]
   parent = "Definitions and Builders"
+  identifier = "Expressions"
   weight = 10
   pre = "<i class='fa'></i>"
 +++
@@ -28,6 +29,8 @@ class Person
 	public HashSet<string> FavoriteNames { get; set; }
 
 	public DateTime CreatedAtUtc { get; set; }
+
+	public int PermissionFlags { get; set; }
 }
 
 class Pet
@@ -38,7 +41,7 @@ class Pet
 
 ## Filters
 
-We'll walk through the supported expressions below. The [tests]({{< srcref "MongoDB.Driver.Tests/Linq/Translators/PredicateTranslatorTests.cs" >}}) are also a good reference.
+We'll walk through the supported expressions below. The [tests]({{< testref "MongoDB.Driver.Tests/Linq/Translators/PredicateTranslatorTests.cs" >}}) are also a good reference.
 
 ### Comparison
 
@@ -113,6 +116,22 @@ Find(p => localAges.Contains(p.Age));
 { Age: { $in: [10, 20, 30] } }
 ```
 
+```csharp
+int[] localNames = new [] { "Fluffy", "Scruffy" };
+Find(p => p.Pets.Any(i => localNames.Contains(i.Name));
+```
+```json
+{ "Pets.Name": { $in: ["Fluffy", "Scruffy"] } }
+```
+
+```csharp
+int[] localNumbers = new [] { 30, 40 };
+Find(p => localNumbers.Any(i => p.FavoriteNumbers.Contains(i));
+```
+```json
+{ FavoriteNumbers: { $in: [30, 40] } } 
+```
+
 #### $nin
 
 ```csharp
@@ -121,6 +140,42 @@ Find(p => !localAges.Contains(p.Age));
 ```
 ```json
 { Age: { $nin: [10, 20, 30] } }
+```
+
+#### $bitsAllClear
+
+```csharp
+Find(p => (p.PermissionFlags & 7) == 0);
+```
+```json
+{ PermissionFlags: { $bitsAllClear: 7 } }
+```
+
+#### $bitsAllSet
+
+```csharp
+Find(p => (p.PermissionFlags & 7) == 7);
+```
+```json
+{ PermissionFlags: { $bitsAllSet: 7 } }
+```
+
+#### $bitsAnyClear
+
+```csharp
+Find(p => (p.PermissionFlags & 7) != 7);
+```
+```json
+{ PermissionFlags: { $bitsAnyClear: 7 } }
+```
+
+#### $bitsAnySet
+
+```csharp
+Find(p => (p.PermissionFlags & 7) != 0);
+```
+```json
+{ PermissionFlags: { $bitsAnySet: 7 } }
 ```
 
 ### Logical
@@ -246,31 +301,45 @@ See the [MongoDB documentation]({{< docsref "reference/operator/query/#geospatia
 // no example yet
 ```
 
-### Geospatial
+### Array
 
 See the [MongoDB documentation]({{< docsref "reference/operator/query/#array" >}}) for more information on each operator.
 
 #### $all
 
 ```csharp
-// no example yet
+var local = new [] { 10, 20 };
+Find(x => local.All(i => FavoriteNumbers.Contains(i));
+```
+```json
+{ FavoriteNumbers: { $all: [10, 20] } }
 ```
 
 #### $elemMatch
 
 ```csharp
-Find(x => x.Pets.Any(p => p.Name == "Fluffy");
+Find(x => x.Pets.Any(p => p.Name == "Fluffy" && p.Age > 21);
 ```
 ```json
-{ Pets: { $elemMatch: { Name: 'Fluffy' } } }
+{ Pets: { $elemMatch: { Name: 'Fluffy', Age: { $gt: 21 } } } }
 ```
 ---
 ```csharp
-Find(x => x.FavoriteNumbers.Any(n => n > 21));
+Find(x => x.FavoriteNumbers.Any(n => n < 42 && n > 21));
 ```
 ```json
-{ FavoriteNumbers: { $elemMatch: { { $gt: 21 } } } }
+{ FavoriteNumbers: { $elemMatch: { $lt: 42, $gt: 21 } } }
 ```
+
+{{% note %}}Depending on the complexity and the operators involved in the Any method call, the driver might eliminate the $elemMatch completely. For instance,
+
+```csharp
+Find(x => x.Pets.Any(p => p.Name == "Fluffy"))
+```
+```json
+{ Pets: { Name: "Fluffy" } }
+```{{% /note %}}
+
 
 #### $size
 
@@ -304,7 +373,7 @@ Find(x => x.FavoriteNumbers.Count() == 3);
 
 ## Aggregation Projections
 
-We'll walk through the supported expressions below. The [tests]({{< srcref "MongoDB.Driver.Tests/Linq/Translators/AggregateProjectionTranslatorTests_Project.cs" >}}) are also a good reference.
+We'll walk through the supported expressions below. The [tests]({{< testref "MongoDB.Driver.Tests/Linq/Translators/AggregateProjectTranslatorTests.cs" >}}) are also a good reference.
 
 ### Boolean Expressions
 
@@ -514,6 +583,15 @@ p => p.Age != 20;
 
 See the [MongoDB documentation]({{< docsref "meta/aggregation-quick-reference/#arithmetic-expressions" >}}) for more information on each operator.
 
+#### $abs
+
+```csharp
+p => Math.Abs(p.Age);
+```
+```json
+{ $abs: "$Age" }
+```
+
 #### $add
 
 ```csharp
@@ -523,22 +601,13 @@ p => p.Age + 2;
 { $add: [ '$Age', 2 ] }
 ```
 
-#### $subtract
+#### $ceil
 
 ```csharp
-p => p.Age - 2;
+p => Math.Ceiling(p.Age);
 ```
 ```json
-{ $subtract: [ '$Age', 2 ] }
-```
-
-#### $multiply
-
-```csharp
-p => p.Age * 2;
-```
-```json
-{ $multiply: [ '$Age', 2 ] }
+{ $ceil: "$Age" }
 ```
 
 #### $divide
@@ -550,6 +619,51 @@ p => p.Age / 2;
 { $divide: [ '$Age', 2 ] }
 ```
 
+#### $exp
+
+```csharp
+p => Math.Exp(p.Age);
+```
+```json
+{ $exp: ["$Age"] }
+```
+
+#### $floor
+
+```csharp
+p => Math.Floor(p.Age);
+```
+```json
+{ $floor: "$Age" }
+```
+
+#### $ln
+
+```csharp
+p => Math.Log(p.Age);
+```
+```json
+{ $ln: ["$Age"] }
+```
+
+#### $log
+
+```csharp
+p => Math.Log(p.Age, 10);
+```
+```json
+{ $log: ["$Age", 10] }
+```
+
+#### $log10
+
+```csharp
+p => Math.Log10(p.Age);
+```
+```json
+{ $log10: ["$Age"] }
+```
+
 #### $mod
 
 ```csharp
@@ -558,6 +672,52 @@ p => p.Age % 2;
 ```json
 { $mod: [ '$Age', 2 ] }
 ```
+
+#### $multiply
+
+```csharp
+p => p.Age * 2;
+```
+```json
+{ $multiply: [ '$Age', 2 ] }
+```
+
+#### $pow
+
+```csharp
+p => Math.Pow(p.Age, 10);
+```
+```json
+{ $pow: ["$Age", 10] }
+```
+
+#### $sqrt
+
+```csharp
+p => Math.Sqrt(p.Age);
+```
+```json
+{ $sqrt: ["$Age"] }
+```
+
+#### $subtract
+
+```csharp
+p => p.Age - 2;
+```
+```json
+{ $subtract: [ '$Age', 2 ] }
+```
+
+#### $trunc
+
+```csharp
+p => Math.Truncate(p.Age);
+```
+```json
+{ $trunc: "$Age" }
+```
+
 
 ### String Expressions
 
@@ -624,6 +784,75 @@ See the [MongoDB documentation]({{< docsref "meta/aggregation-quick-reference/#t
 
 See the [MongoDB documentation]({{< docsref "meta/aggregation-quick-reference/#array-expressions" >}}) for more information on each operator.
 
+#### $arrayElemAt
+
+```csharp
+p => p.FavoriteNumbers.First()
+```
+```json
+{ $arrayElemAt: ['$FavoriteNumbers', 0] }
+```
+```csharp
+p => p.FavoriteNumbers.Last()
+```
+```json
+{ $arrayElemAt: ['$FavoriteNumbers', -1] }
+```
+
+#### $avg
+
+```csharp
+p => p.FavoriteNumbers.Average()
+```
+```json
+{ $avg: '$FavoriteNumbers' }
+```
+
+#### $concatArrays
+
+```csharp
+p => p.FavoriteNumbers.Concat(new [] { 1, 2, 3 })
+```
+```json
+{ $concatArrays: ['$FavoriteNumbers', [1, 2, 3]] }
+```
+
+#### $filter
+
+```csharp
+p => p.FavoriteNumbers.Where(x => x > 10)
+```
+```json
+{ $filter: { input: '$FavoriteNumbers', as: 'x', cond: { $gt: ['$$x', 10] } } }
+```
+
+#### $map
+
+```csharp
+p => p.FavoriteNumbers.Select(x => x + 10)
+```
+```json
+{ $map: { input: '$FavoriteNumbers', as: 'x', in: { $add: ['$$x', 10] } } }
+```
+
+#### $max
+
+```csharp
+p => p.FavoriteNumbers.Max()
+```
+```json
+{ $max: '$FavoriteNumbers' }
+```
+
+#### $min
+
+```csharp
+p => p.FavoriteNumbers.Min()
+```
+```json
+{ $min: '$FavoriteNumbers' }
+```
+
 #### $size
 
 ```csharp
@@ -638,6 +867,48 @@ p => p.FavoriteNumbers.Count();
 ```
 ```json
 { $size: '$FavoriteNumbers' }
+```
+
+#### $slice
+
+```csharp
+p => p.FavoriteNumbers.Take(2)
+```
+```json
+{ $slice: ['$FavoriteNumbers', 2] }
+```
+```csharp
+p => p.FavoriteNumbers.Skip(3).Take(2)
+```
+```json
+{ $slice: ['$FavoriteNumbers', 3, 2] }
+```
+
+#### $stdDevPop
+
+```csharp
+p => p.FavoriteNumbers.StandardDeviationPopulation()
+```
+```json
+{ $stdDevPop: '$FavoriteNumbers' }
+```
+
+#### $stdDevSamp
+
+```csharp
+p => p.FavoriteNumbers.StandardDeviationSample()
+```
+```json
+{ $stdDevPop: '$FavoriteNumbers' }
+```
+
+#### $sum
+
+```csharp
+p => p.FavoriteNumbers.Sum()
+```
+```json
+{ $sum: '$FavoriteNumbers' }
 ```
 
 ### Variable Expressions
@@ -799,7 +1070,7 @@ p => p.Name ?? "awesome";
 
 See the [MongoDB documentation]({{< docsref "meta/aggregation-quick-reference/#accumulators" >}}) for more information on each operator.
 
-Also, the [tests]({{< srcref "MongoDB.Driver.Tests/Linq/Translators/AggregateProjectionTranslatorTests_Group.cs" >}}) are a good reference.
+Also, the [tests]({{< testref "MongoDB.Driver.Tests/Linq/Translators/AggregateGroupTranslatorTests.cs" >}}) are a good reference.
 
 {{% note %}}These are only supported in a grouping expression.{{% /note %}}
 

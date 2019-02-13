@@ -1,4 +1,4 @@
-﻿/* Copyright 2013-2014 MongoDB Inc.
+/* Copyright 2013-present MongoDB Inc.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -30,17 +30,20 @@ namespace MongoDB.Driver.Core.Bindings
         private readonly IChannelSourceHandle _channelSource;
         private bool _disposed;
         private readonly ReadPreference _readPreference;
+        private readonly ICoreSessionHandle _session;
 
         // constructors
         /// <summary>
-        /// Initializes a new instance of the <see cref="ChannelSourceReadWriteBinding"/> class.
+        /// Initializes a new instance of the <see cref="ChannelSourceReadWriteBinding" /> class.
         /// </summary>
         /// <param name="channelSource">The channel source.</param>
         /// <param name="readPreference">The read preference.</param>
-        public ChannelSourceReadWriteBinding(IChannelSourceHandle channelSource, ReadPreference readPreference)
+        /// <param name="session">The session.</param>
+        public ChannelSourceReadWriteBinding(IChannelSourceHandle channelSource, ReadPreference readPreference, ICoreSessionHandle session)
         {
-            _channelSource = Ensure.IsNotNull(channelSource, "channelSource");
-            _readPreference = Ensure.IsNotNull(readPreference, "readPreference");
+            _channelSource = Ensure.IsNotNull(channelSource, nameof(channelSource));
+            _readPreference = Ensure.IsNotNull(readPreference, nameof(readPreference));
+            _session = Ensure.IsNotNull(session, nameof(session));
         }
 
         // properties
@@ -50,19 +53,39 @@ namespace MongoDB.Driver.Core.Bindings
             get { return _readPreference; }
         }
 
+        /// <inheritdoc/>
+        public ICoreSessionHandle Session
+        {
+            get { return _session; }
+        }
+
         // methods
+        /// <inheritdoc/>
+        public IChannelSourceHandle GetReadChannelSource(CancellationToken cancellationToken)
+        {
+            ThrowIfDisposed();
+            return GetChannelSourceHelper();
+        }
+
         /// <inheritdoc/>
         public Task<IChannelSourceHandle> GetReadChannelSourceAsync(CancellationToken cancellationToken)
         {
             ThrowIfDisposed();
-            return Task.FromResult(_channelSource.Fork());
+            return Task.FromResult(GetChannelSourceHelper());
+        }
+
+        /// <inheritdoc/>
+        public IChannelSourceHandle GetWriteChannelSource(CancellationToken cancellationToken)
+        {
+            ThrowIfDisposed();
+            return GetChannelSourceHelper();
         }
 
         /// <inheritdoc/>
         public Task<IChannelSourceHandle> GetWriteChannelSourceAsync(CancellationToken cancellationToken)
         {
             ThrowIfDisposed();
-            return Task.FromResult(_channelSource.Fork());
+            return Task.FromResult(GetChannelSourceHelper());
         }
 
         /// <inheritdoc/>
@@ -71,14 +94,19 @@ namespace MongoDB.Driver.Core.Bindings
             if (!_disposed)
             {
                 _channelSource.Dispose();
+                _session.Dispose();
                 _disposed = true;
-                GC.SuppressFinalize(this);
             }
+        }
+
+        private IChannelSourceHandle GetChannelSourceHelper()
+        {
+            return _channelSource.Fork();
         }
 
         private void ThrowIfDisposed()
         {
-            if(_disposed)
+            if (_disposed)
             {
                 throw new ObjectDisposedException(GetType().Name);
             }

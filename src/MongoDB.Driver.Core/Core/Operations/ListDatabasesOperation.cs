@@ -1,4 +1,4 @@
-﻿/* Copyright 2013-2014 MongoDB Inc.
+/* Copyright 2013-present MongoDB Inc.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -32,7 +32,9 @@ namespace MongoDB.Driver.Core.Operations
     public class ListDatabasesOperation : IReadOperation<IAsyncCursor<BsonDocument>>
     {
         // fields
+        private BsonDocument _filter;
         private MessageEncoderSettings _messageEncoderSettings;
+        private bool? _nameOnly;
 
         // constructors
         /// <summary>
@@ -46,6 +48,18 @@ namespace MongoDB.Driver.Core.Operations
 
         // properties
         /// <summary>
+        /// Gets or sets the filter.
+        /// </summary>
+        /// <value>
+        /// The filter.
+        /// </value>
+        public BsonDocument Filter
+        {
+            get { return _filter; }
+            set { _filter = value; }
+        }
+
+        /// <summary>
         /// Gets the message encoder settings.
         /// </summary>
         /// <value>
@@ -56,21 +70,58 @@ namespace MongoDB.Driver.Core.Operations
             get { return _messageEncoderSettings; }
         }
 
-        // methods
-        internal BsonDocument CreateCommand()
+        /// <summary>
+        /// Gets or sets the NameOnly flag.
+        /// </summary>
+        /// <value>
+        /// The NameOnly flag.
+        /// </value>
+        public bool? NameOnly
         {
-            return new BsonDocument { { "listDatabases", 1 } };
+            get { return _nameOnly; }
+            set { _nameOnly = value; }
+        }
+
+        // public methods
+        /// <inheritdoc/>
+        public IAsyncCursor<BsonDocument> Execute(IReadBinding binding, CancellationToken cancellationToken)
+        {
+            Ensure.IsNotNull(binding, nameof(binding));
+            var operation = CreateOperation();
+            var reply = operation.Execute(binding, cancellationToken);
+            return CreateCursor(reply);
         }
 
         /// <inheritdoc/>
         public async Task<IAsyncCursor<BsonDocument>> ExecuteAsync(IReadBinding binding, CancellationToken cancellationToken)
         {
-            Ensure.IsNotNull(binding, "binding");
-            var command = CreateCommand();
-            var operation = new ReadCommandOperation<BsonDocument>(DatabaseNamespace.Admin, command, BsonDocumentSerializer.Instance, _messageEncoderSettings);
-            var response = await operation.ExecuteAsync(binding, cancellationToken).ConfigureAwait(false);
-            var databases = response["databases"].AsBsonArray.OfType<BsonDocument>();
+            Ensure.IsNotNull(binding, nameof(binding));
+            var operation = CreateOperation();
+            var reply = await operation.ExecuteAsync(binding, cancellationToken).ConfigureAwait(false);
+            return CreateCursor(reply);
+        }
+
+        // private methods
+        internal BsonDocument CreateCommand()
+        {
+            return new BsonDocument
+            {
+                { "listDatabases", 1 },
+                { "filter", _filter, _filter != null },
+                { "nameOnly", _nameOnly, _nameOnly != null }
+            };
+        }
+
+        private IAsyncCursor<BsonDocument> CreateCursor(BsonDocument reply)
+        {
+            var databases = reply["databases"].AsBsonArray.OfType<BsonDocument>();
             return new SingleBatchAsyncCursor<BsonDocument>(databases.ToList());
+        }
+
+        private ReadCommandOperation<BsonDocument> CreateOperation()
+        {
+            var command = CreateCommand();
+            return new ReadCommandOperation<BsonDocument>(DatabaseNamespace.Admin, command, BsonDocumentSerializer.Instance, _messageEncoderSettings);
         }
     }
 }

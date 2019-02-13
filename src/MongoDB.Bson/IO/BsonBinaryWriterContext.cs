@@ -1,4 +1,4 @@
-﻿/* Copyright 2010-2014 MongoDB Inc.
+﻿/* Copyright 2010-present MongoDB Inc.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -20,14 +20,14 @@ namespace MongoDB.Bson.IO
         // private fields
         private BsonBinaryWriterContext _parentContext;
         private ContextType _contextType;
-        private int _startPosition;
+        private long _startPosition;
         private int _index; // used when contextType is Array
 
         // constructors
         internal BsonBinaryWriterContext(
             BsonBinaryWriterContext parentContext,
             ContextType contextType,
-            int startPosition)
+            long startPosition)
         {
             _parentContext = parentContext;
             _contextType = contextType;
@@ -45,7 +45,7 @@ namespace MongoDB.Bson.IO
             get { return _contextType; }
         }
 
-        internal int StartPosition
+        internal long StartPosition
         {
             get { return _startPosition; }
         }

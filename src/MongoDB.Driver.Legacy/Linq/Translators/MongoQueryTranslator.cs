@@ -1,4 +1,4 @@
-﻿/* Copyright 2010-2014 MongoDB Inc.
+/* Copyright 2010-present MongoDB Inc.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -16,6 +16,7 @@
 using System;
 using System.Linq;
 using System.Linq.Expressions;
+using System.Reflection;
 
 namespace MongoDB.Driver.Linq
 {
@@ -60,12 +61,13 @@ namespace MongoDB.Driver.Linq
             if (constantExpression != null)
             {
                 var constantType = constantExpression.Type;
-                if (constantType.IsGenericType)
+                var constantTypeInfo = constantType.GetTypeInfo();
+                if (constantTypeInfo.IsGenericType)
                 {
-                    var genericTypeDefinition = constantType.GetGenericTypeDefinition();
+                    var genericTypeDefinition = constantTypeInfo.GetGenericTypeDefinition();
                     if (genericTypeDefinition == typeof(MongoQueryable<>))
                     {
-                        return constantType.GetGenericArguments()[0];
+                        return constantTypeInfo.GetGenericArguments()[0];
                     }
                 }
             }

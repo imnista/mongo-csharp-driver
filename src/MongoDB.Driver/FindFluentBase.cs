@@ -1,4 +1,4 @@
-﻿/* Copyright 2010-2014 MongoDB Inc.
+/* Copyright 2010-present MongoDB Inc.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -13,8 +13,10 @@
 * limitations under the License.
 */
 
+using System;
 using System.Threading;
 using System.Threading.Tasks;
+using MongoDB.Bson.Serialization;
 
 namespace MongoDB.Driver
 {
@@ -32,7 +34,30 @@ namespace MongoDB.Driver
         public abstract FindOptions<TDocument, TProjection> Options { get; }
 
         /// <inheritdoc />
+        public abstract IFindFluent<TDocument, TResult> As<TResult>(IBsonSerializer<TResult> resultSerializer);
+
+        /// <inheritdoc />
+        [Obsolete("Use CountDocuments instead.")]
+        public virtual long Count(CancellationToken cancellationToken = default(CancellationToken))
+        {
+            throw new NotImplementedException();
+        }
+
+        /// <inheritdoc />
+        [Obsolete("Use CountDocumentsAsync instead.")]
         public abstract Task<long> CountAsync(CancellationToken cancellationToken = default(CancellationToken));
+
+        /// <inheritdoc />
+        public virtual long CountDocuments(CancellationToken cancellationToken = default(CancellationToken))
+        {
+            throw new NotImplementedException();
+        }
+
+        /// <inheritdoc />
+        public virtual Task<long> CountDocumentsAsync(CancellationToken cancellationToken = default(CancellationToken))
+        {
+            throw new NotImplementedException();
+        }
 
         /// <inheritdoc />
         public abstract IFindFluent<TDocument, TProjection> Limit(int? limit);
@@ -45,6 +70,12 @@ namespace MongoDB.Driver
 
         /// <inheritdoc />
         public abstract IFindFluent<TDocument, TProjection> Sort(SortDefinition<TDocument> sort);
+
+        /// <inheritdoc />
+        public virtual IAsyncCursor<TProjection> ToCursor(CancellationToken cancellationToken)
+        {
+            throw new NotImplementedException();
+        }
 
         /// <inheritdoc />
         public abstract Task<IAsyncCursor<TProjection>> ToCursorAsync(CancellationToken cancellationToken);

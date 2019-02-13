@@ -1,4 +1,4 @@
-﻿/* Copyright 2010-2014 MongoDB Inc.
+/* Copyright 2010-present MongoDB Inc.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -14,9 +14,6 @@
 */
 
 using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
 using MongoDB.Bson;
 using MongoDB.Bson.Serialization;
 using MongoDB.Driver.Core.Misc;
@@ -31,6 +28,8 @@ namespace MongoDB.Driver
     public sealed class MapReduceOptions<TDocument, TResult>
     {
         // fields
+        private bool? _bypassDocumentValidation;
+        private Collation _collation;
         private FilterDefinition<TDocument> _filter;
         private BsonJavaScript _finalize;
         private bool? _javaScriptMode;
@@ -43,6 +42,24 @@ namespace MongoDB.Driver
         private bool? _verbose;
 
         // properties
+        /// <summary>
+        /// Gets or sets a value indicating whether to bypass document validation.
+        /// </summary>
+        public bool? BypassDocumentValidation
+        {
+            get { return _bypassDocumentValidation; }
+            set { _bypassDocumentValidation = value; }
+        }
+
+        /// <summary>
+        /// Gets or sets the collation.
+        /// </summary>
+        public Collation Collation
+        {
+            get { return _collation; }
+            set { _collation = value; }
+        }
+
         /// <summary>
         /// Gets or sets the filter.
         /// </summary>
@@ -85,7 +102,7 @@ namespace MongoDB.Driver
         public TimeSpan? MaxTime
         {
             get { return _maxTime; }
-            set { _maxTime = value; }
+            set { _maxTime = Ensure.IsNullOrInfiniteOrGreaterThanOrEqualToZero(value, nameof(value)); }
         }
 
         /// <summary>
@@ -162,7 +179,7 @@ namespace MongoDB.Driver
         /// <returns>A merge map-reduce output options.</returns>
         public static MapReduceOutputOptions Merge(string collectionName, string databaseName = null, bool? sharded = null, bool? nonAtomic = null)
         {
-            Ensure.IsNotNull(collectionName, "collectionName");
+            Ensure.IsNotNull(collectionName, nameof(collectionName));
             return new CollectionOutput(collectionName, Core.Operations.MapReduceOutputMode.Merge, databaseName, sharded, nonAtomic);
         }
 
@@ -176,7 +193,7 @@ namespace MongoDB.Driver
         /// <returns>A reduce map-reduce output options.</returns>
         public static MapReduceOutputOptions Reduce(string collectionName, string databaseName = null, bool? sharded = null, bool? nonAtomic = null)
         {
-            Ensure.IsNotNull(collectionName, "collectionName");
+            Ensure.IsNotNull(collectionName, nameof(collectionName));
             return new CollectionOutput(collectionName, Core.Operations.MapReduceOutputMode.Reduce, databaseName, sharded, nonAtomic);
         }
 
@@ -189,7 +206,7 @@ namespace MongoDB.Driver
         /// <returns>A replace map-reduce output options.</returns>
         public static MapReduceOutputOptions Replace(string collectionName, string databaseName = null, bool? sharded = null)
         {
-            Ensure.IsNotNull(collectionName, "collectionName");
+            Ensure.IsNotNull(collectionName, nameof(collectionName));
             return new CollectionOutput(collectionName, Core.Operations.MapReduceOutputMode.Replace, databaseName, sharded, null);
         }
 

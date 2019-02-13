@@ -1,4 +1,4 @@
-﻿/* Copyright 2010-2014 MongoDB Inc.
+﻿/* Copyright 2010-present MongoDB Inc.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -21,12 +21,14 @@ namespace MongoDB.Bson
     /// <summary>
     /// Represents a BSON regular expression value.
     /// </summary>
+#if NET452
     [Serializable]
+#endif
     public class BsonRegularExpression : BsonValue, IComparable<BsonRegularExpression>, IEquatable<BsonRegularExpression>
     {
         // private fields
-        private string _pattern;
-        private string _options;
+        private readonly string _pattern;
+        private readonly string _options;
 
         // constructors
         /// <summary>
@@ -209,7 +211,7 @@ namespace MongoDB.Bson
             var otherRegularExpression = other as BsonRegularExpression;
             if (otherRegularExpression != null)
             {
-                return _options.CompareTo(otherRegularExpression);
+                return CompareTo(otherRegularExpression);
             }
             return CompareTypeTo(other);
         }

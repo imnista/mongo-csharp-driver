@@ -1,4 +1,4 @@
-﻿/* Copyright 2013-2014 MongoDB Inc.
+/* Copyright 2013-present MongoDB Inc.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -21,8 +21,10 @@ using MongoDB.Bson;
 using MongoDB.Bson.Serialization;
 using MongoDB.Bson.Serialization.Serializers;
 using MongoDB.Driver.Core.Bindings;
+using MongoDB.Driver.Core.Connections;
 using MongoDB.Driver.Core.Misc;
 using MongoDB.Driver.Core.WireProtocol.Messages.Encoders;
+using MongoDB.Shared;
 
 namespace MongoDB.Driver.Core.Operations
 {
@@ -33,11 +35,13 @@ namespace MongoDB.Driver.Core.Operations
     public class DistinctOperation<TValue> : IReadOperation<IAsyncCursor<TValue>>
     {
         // fields
+        private Collation _collation;
         private CollectionNamespace _collectionNamespace;
         private BsonDocument _filter;
         private string _fieldName;
         private TimeSpan? _maxTime;
         private MessageEncoderSettings _messageEncoderSettings;
+        private ReadConcern _readConcern = ReadConcern.Default;
         private IBsonSerializer<TValue> _valueSerializer;
 
         // constructors
@@ -50,13 +54,24 @@ namespace MongoDB.Driver.Core.Operations
         /// <param name="messageEncoderSettings">The message encoder settings.</param>
         public DistinctOperation(CollectionNamespace collectionNamespace, IBsonSerializer<TValue> valueSerializer, string fieldName, MessageEncoderSettings messageEncoderSettings)
         {
-            _collectionNamespace = Ensure.IsNotNull(collectionNamespace, "collectionNamespace");
-            _valueSerializer = Ensure.IsNotNull(valueSerializer, "valueSerializer");
-            _fieldName = Ensure.IsNotNullOrEmpty(fieldName, "fieldName");
-            _messageEncoderSettings = Ensure.IsNotNull(messageEncoderSettings, "messageEncoderSettings");
+            _collectionNamespace = Ensure.IsNotNull(collectionNamespace, nameof(collectionNamespace));
+            _valueSerializer = Ensure.IsNotNull(valueSerializer, nameof(valueSerializer));
+            _fieldName = Ensure.IsNotNullOrEmpty(fieldName, nameof(fieldName));
+            _messageEncoderSettings = Ensure.IsNotNull(messageEncoderSettings, nameof(messageEncoderSettings));
         }
 
         // properties
+        /// <summary>
+        /// Gets or sets the collation.
+        /// </summary>
+        /// <value>
+        /// The collation.
+        /// </value>
+        public Collation Collation
+        {
+            get { return _collation; }
+            set { _collation = value; }
+        }
         /// <summary>
         /// Gets the collection namespace.
         /// </summary>
@@ -100,7 +115,7 @@ namespace MongoDB.Driver.Core.Operations
         public TimeSpan? MaxTime
         {
             get { return _maxTime; }
-            set { _maxTime = Ensure.IsNullOrInfiniteOrGreaterThanOrEqualToZero(value, "value"); }
+            set { _maxTime = Ensure.IsNullOrInfiniteOrGreaterThanOrEqualToZero(value, nameof(value)); }
         }
 
         /// <summary>
@@ -115,6 +130,18 @@ namespace MongoDB.Driver.Core.Operations
         }
 
         /// <summary>
+        /// Gets or sets the read concern.
+        /// </summary>
+        /// <value>
+        /// The read concern.
+        /// </value>
+        public ReadConcern ReadConcern
+        {
+            get { return _readConcern; }
+            set { _readConcern = Ensure.IsNotNull(value, nameof(value)); }
+        }
+
+        /// <summary>
         /// Gets the value serializer.
         /// </summary>
         /// <value>
@@ -125,28 +152,59 @@ namespace MongoDB.Driver.Core.Operations
             get { return _valueSerializer; }
         }
 
-        // methods
-        internal BsonDocument CreateCommand()
+        // public methods
+        /// <inheritdoc/>
+        public IAsyncCursor<TValue> Execute(IReadBinding binding, CancellationToken cancellationToken)
         {
-            return new BsonDocument
+            Ensure.IsNotNull(binding, nameof(binding));
+            using (var channelSource = binding.GetReadChannelSource(cancellationToken))
+            using (var channel = channelSource.GetChannel(cancellationToken))
+            using (var channelBinding = new ChannelReadBinding(channelSource.Server, channel, binding.ReadPreference, binding.Session.Fork()))
             {
-                { "distinct", _collectionNamespace.CollectionName },
-                { "key", _fieldName },
-                { "query", _filter, _filter != null },
-                { "maxTimeMS", () => _maxTime.Value.TotalMilliseconds, _maxTime.HasValue }
-           };
+                var operation = CreateOperation(channel, channelBinding);
+                var values = operation.Execute(channelBinding, cancellationToken);
+                return new SingleBatchAsyncCursor<TValue>(values);
+            }
         }
 
         /// <inheritdoc/>
         public async Task<IAsyncCursor<TValue>> ExecuteAsync(IReadBinding binding, CancellationToken cancellationToken)
         {
-            Ensure.IsNotNull(binding, "binding");
-            var command = CreateCommand();
+            Ensure.IsNotNull(binding, nameof(binding));
+            using (var channelSource = await binding.GetReadChannelSourceAsync(cancellationToken).ConfigureAwait(false))
+            using (var channel = await channelSource.GetChannelAsync(cancellationToken).ConfigureAwait(false))
+            using (var channelBinding = new ChannelReadBinding(channelSource.Server, channel, binding.ReadPreference, binding.Session.Fork()))
+            {
+                var operation = CreateOperation(channel, channelBinding);
+                var values = await operation.ExecuteAsync(channelBinding, cancellationToken).ConfigureAwait(false);
+                return new SingleBatchAsyncCursor<TValue>(values);
+            }
+        }
+
+        // private methods
+        internal BsonDocument CreateCommand(ConnectionDescription connectionDescription, ICoreSession session)
+        {
+            Feature.ReadConcern.ThrowIfNotSupported(connectionDescription.ServerVersion, _readConcern);
+            Feature.Collation.ThrowIfNotSupported(connectionDescription.ServerVersion, _collation);
+
+            var readConcern = ReadConcernHelper.GetReadConcernForCommand(session, connectionDescription, _readConcern);
+            return new BsonDocument
+            {
+                { "distinct", _collectionNamespace.CollectionName },
+                { "key", _fieldName },
+                { "query", _filter, _filter != null },
+                { "maxTimeMS", () => MaxTimeHelper.ToMaxTimeMS(_maxTime.Value), _maxTime.HasValue },
+                { "collation", () => _collation.ToBsonDocument(), _collation != null },
+                { "readConcern", readConcern, readConcern != null }
+            };
+        }
+
+        private ReadCommandOperation<TValue[]> CreateOperation(IChannel channel, IBinding binding)
+        {
+            var command = CreateCommand(channel.ConnectionDescription, binding.Session);
             var valueArraySerializer = new ArraySerializer<TValue>(_valueSerializer);
             var resultSerializer = new ElementDeserializer<TValue[]>("values", valueArraySerializer);
-            var operation = new ReadCommandOperation<TValue[]>(_collectionNamespace.DatabaseNamespace, command, resultSerializer, _messageEncoderSettings);
-            var values = await operation.ExecuteAsync(binding, cancellationToken).ConfigureAwait(false);
-            return new SingleBatchAsyncCursor<TValue>(values);
+            return new ReadCommandOperation<TValue[]>(_collectionNamespace.DatabaseNamespace, command, resultSerializer, _messageEncoderSettings);
         }
     }
 }

@@ -1,4 +1,4 @@
-﻿/* Copyright 2013-2014 MongoDB Inc.
+/* Copyright 2013-present MongoDB Inc.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -19,7 +19,9 @@ using System.Threading.Tasks;
 using MongoDB.Bson;
 using MongoDB.Bson.Serialization.Serializers;
 using MongoDB.Driver.Core.Bindings;
+using MongoDB.Driver.Core.Connections;
 using MongoDB.Driver.Core.Misc;
+using MongoDB.Driver.Core.Servers;
 using MongoDB.Driver.Core.WireProtocol.Messages.Encoders;
 
 namespace MongoDB.Driver.Core.Operations
@@ -32,12 +34,19 @@ namespace MongoDB.Driver.Core.Operations
         // fields
         private bool? _autoIndexId;
         private bool? _capped;
+        private Collation _collation;
         private readonly CollectionNamespace _collectionNamespace;
+        private BsonDocument _indexOptionDefaults;
         private long? _maxDocuments;
         private long? _maxSize;
         private readonly MessageEncoderSettings _messageEncoderSettings;
+        private bool? _noPadding;
         private BsonDocument _storageEngine;
         private bool? _usePowerOf2Sizes;
+        private DocumentValidationAction? _validationAction;
+        private DocumentValidationLevel? _validationLevel;
+        private BsonDocument _validator;
+        private WriteConcern _writeConcern;
 
         // constructors
         /// <summary>
@@ -49,7 +58,7 @@ namespace MongoDB.Driver.Core.Operations
             CollectionNamespace collectionNamespace,
             MessageEncoderSettings messageEncoderSettings)
         {
-            _collectionNamespace = Ensure.IsNotNull(collectionNamespace, "collectionNamespace");
+            _collectionNamespace = Ensure.IsNotNull(collectionNamespace, nameof(collectionNamespace));
             _messageEncoderSettings = messageEncoderSettings;
         }
 
@@ -60,6 +69,7 @@ namespace MongoDB.Driver.Core.Operations
         /// <value>
         /// A value indicating whether an index on _id should be created automatically.
         /// </value>
+        [Obsolete("AutoIndexId has been deprecated since server version 3.2.")]
         public bool? AutoIndexId
         {
             get { return _autoIndexId; }
@@ -79,6 +89,18 @@ namespace MongoDB.Driver.Core.Operations
         }
 
         /// <summary>
+        /// Gets or sets the collation.
+        /// </summary>
+        /// <value>
+        /// The collation.
+        /// </value>
+        public Collation Collation
+        {
+            get { return _collation; }
+            set { _collation = value; }
+        }
+
+        /// <summary>
         /// Gets the collection namespace.
         /// </summary>
         /// <value>
@@ -90,6 +112,18 @@ namespace MongoDB.Driver.Core.Operations
         }
 
         /// <summary>
+        /// Gets or sets the index option defaults.
+        /// </summary>
+        /// <value>
+        /// The index option defaults.
+        /// </value>
+        public BsonDocument IndexOptionDefaults
+        {
+            get { return _indexOptionDefaults; }
+            set { _indexOptionDefaults = value; }
+        }
+
+        /// <summary>
         /// Gets or sets the maximum number of documents in a capped collection.
         /// </summary>
         /// <value>
@@ -98,7 +132,7 @@ namespace MongoDB.Driver.Core.Operations
         public long? MaxDocuments
         {
             get { return _maxDocuments; }
-            set { _maxDocuments = Ensure.IsNullOrGreaterThanZero(value, "value"); }
+            set { _maxDocuments = Ensure.IsNullOrGreaterThanZero(value, nameof(value)); }
         }
 
         /// <summary>
@@ -110,7 +144,7 @@ namespace MongoDB.Driver.Core.Operations
         public long? MaxSize
         {
             get { return _maxSize; }
-            set { _maxSize = Ensure.IsNullOrGreaterThanZero(value, "value"); }
+            set { _maxSize = Ensure.IsNullOrGreaterThanZero(value, nameof(value)); }
         }
 
         /// <summary>
@@ -122,6 +156,15 @@ namespace MongoDB.Driver.Core.Operations
         public MessageEncoderSettings MessageEncoderSettings
         {
             get { return _messageEncoderSettings; }
+        }
+
+        /// <summary>
+        /// Gets or sets whether padding should not be used.
+        /// </summary>
+        public bool? NoPadding
+        {
+            get { return _noPadding; }
+            set { _noPadding = value; }
         }
 
         /// <summary>
@@ -148,9 +191,62 @@ namespace MongoDB.Driver.Core.Operations
             set { _usePowerOf2Sizes = value; }
         }
 
-        // methods
-        internal BsonDocument CreateCommand()
+        /// <summary>
+        /// Gets or sets the validation action.
+        /// </summary>
+        /// <value>
+        /// The validation action.
+        /// </value>
+        public DocumentValidationAction? ValidationAction
         {
+            get { return _validationAction; }
+            set { _validationAction = value; }
+        }
+
+        /// <summary>
+        /// Gets or sets the validation level.
+        /// </summary>
+        /// <value>
+        /// The validation level.
+        /// </value>
+        public DocumentValidationLevel? ValidationLevel
+        {
+            get { return _validationLevel; }
+            set { _validationLevel = value; }
+        }
+
+        /// <summary>
+        /// Gets or sets the validator.
+        /// </summary>
+        /// <value>
+        /// The validator.
+        /// </value>
+        public BsonDocument Validator
+        {
+            get { return _validator; }
+            set { _validator = value; }
+        }
+
+        /// <summary>
+        /// Gets or sets the write concern.
+        /// </summary>
+        /// <value>
+        /// The write concern.
+        /// </value>
+        public WriteConcern WriteConcern
+        {
+            get { return _writeConcern; }
+            set { _writeConcern = value; }
+        }
+
+        // methods
+        internal BsonDocument CreateCommand(ICoreSessionHandle session, ConnectionDescription connectionDescription)
+        {
+            var serverVersion = connectionDescription.ServerVersion;
+            Feature.Collation.ThrowIfNotSupported(serverVersion, _collation);
+
+            var flags = GetFlags();
+            var writeConcern = WriteConcernHelper.GetWriteConcernForCommandThatWrites(session, _writeConcern, serverVersion);
             return new BsonDocument
             {
                 { "create", _collectionNamespace.CollectionName },
@@ -158,18 +254,78 @@ namespace MongoDB.Driver.Core.Operations
                 { "autoIndexId", () => _autoIndexId.Value, _autoIndexId.HasValue },
                 { "size", () => _maxSize.Value, _maxSize.HasValue },
                 { "max", () => _maxDocuments.Value, _maxDocuments.HasValue },
-                { "flags", () => _usePowerOf2Sizes.Value ? 1 : 0, _usePowerOf2Sizes.HasValue},
-                { "storageEngine", () => _storageEngine, _storageEngine != null }
+                { "flags", () => (int)flags.Value, flags.HasValue },
+                { "storageEngine", () => _storageEngine, _storageEngine != null },
+                { "indexOptionDefaults", _indexOptionDefaults, _indexOptionDefaults != null },
+                { "validator", _validator, _validator != null },
+                { "validationAction", () => _validationAction.Value.ToString().ToLowerInvariant(), _validationAction.HasValue },
+                { "validationLevel", () => _validationLevel.Value.ToString().ToLowerInvariant(), _validationLevel.HasValue },
+                { "collation", () => _collation.ToBsonDocument(), _collation != null },
+                { "writeConcern", writeConcern, writeConcern != null }
             };
+        }
+
+        private CreateCollectionFlags? GetFlags()
+        {
+            if (_usePowerOf2Sizes.HasValue || _noPadding.HasValue)
+            {
+                var flags = CreateCollectionFlags.None;
+                if (_usePowerOf2Sizes.HasValue && _usePowerOf2Sizes.Value)
+                {
+                    flags |= CreateCollectionFlags.UsePowerOf2Sizes;
+                }
+                if (_noPadding.HasValue && _noPadding.Value)
+                {
+                    flags |= CreateCollectionFlags.NoPadding;
+                }
+                return flags;
+            }
+            else
+            {
+                return null;
+            }
+        }
+
+        /// <inheritdoc/>
+        public BsonDocument Execute(IWriteBinding binding, CancellationToken cancellationToken)
+        {
+            Ensure.IsNotNull(binding, nameof(binding));
+
+            using (var channelSource = binding.GetWriteChannelSource(cancellationToken))
+            using (var channel = channelSource.GetChannel(cancellationToken))
+            using (var channelBinding = new ChannelReadWriteBinding(channelSource.Server, channel, binding.Session.Fork()))
+            {
+                var operation = CreateOperation(channelBinding.Session, channel.ConnectionDescription);
+                return operation.Execute(channelBinding, cancellationToken);
+            }
         }
 
         /// <inheritdoc/>
         public async Task<BsonDocument> ExecuteAsync(IWriteBinding binding, CancellationToken cancellationToken)
         {
-            Ensure.IsNotNull(binding, "binding");
-            var command = CreateCommand();
-            var operation = new WriteCommandOperation<BsonDocument>(_collectionNamespace.DatabaseNamespace, command, BsonDocumentSerializer.Instance, _messageEncoderSettings);
-            return await operation.ExecuteAsync(binding, cancellationToken).ConfigureAwait(false);
+            Ensure.IsNotNull(binding, nameof(binding));
+
+            using (var channelSource = await binding.GetWriteChannelSourceAsync(cancellationToken).ConfigureAwait(false))
+            using (var channel = await channelSource.GetChannelAsync(cancellationToken).ConfigureAwait(false))
+            using (var channelBinding = new ChannelReadWriteBinding(channelSource.Server, channel, binding.Session.Fork()))
+            {
+                var operation = CreateOperation(channelBinding.Session, channel.ConnectionDescription);
+                return await operation.ExecuteAsync(channelBinding, cancellationToken).ConfigureAwait(false);
+            }
+        }
+
+        private WriteCommandOperation<BsonDocument> CreateOperation(ICoreSessionHandle session, ConnectionDescription connectionDescription)
+        {
+            var command = CreateCommand(session, connectionDescription);
+            return new WriteCommandOperation<BsonDocument>(_collectionNamespace.DatabaseNamespace, command, BsonDocumentSerializer.Instance, _messageEncoderSettings);
+        }
+
+        [Flags]
+        private enum CreateCollectionFlags
+        {
+            None = 0,
+            UsePowerOf2Sizes = 1,
+            NoPadding = 2
         }
     }
 }

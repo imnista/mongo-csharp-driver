@@ -4,6 +4,7 @@ draft = false
 title = "Mapping Classes"
 [menu.main]
   parent = "BSON"
+  identifier = "Mapping Classes"
   weight = 40
   pre = "<i class='fa'></i>"
 +++
@@ -245,7 +246,7 @@ BsonClassMap.RegisterClassMap<MyClass>(cm =>
 });
 ```
 
-{{% note %}}When a readonly property is serialized, it value is persisted to the database, but never read back out. This is useful for storing “computed” properties.{{% /note %}}
+{{% note %}}When a readonly property is serialized, its value is persisted to the database, but never read back out. This is useful for storing “computed” properties.{{% /note %}}
 
 
 ### Element Name
@@ -614,7 +615,7 @@ In this case, the serializer will convert the [`ObjectId`]({{< apiref "T_MongoDB
 BsonClassMap.RegisterClassMap<Employee>(cm => 
 {
     cm.AutoMap();
-    cm.IdMemberMap.SetRepresentation(BsonType.ObjectId);
+    cm.IdMemberMap.SetSerializer(new StringSerializer(BsonType.ObjectId));
 });
 ```
 

@@ -1,4 +1,4 @@
-﻿/* Copyright 2010-2014 MongoDB Inc.
+/* Copyright 2010-present MongoDB Inc.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -50,13 +50,19 @@ namespace MongoDB.Driver
         /// <summary>
         /// User power of 2 size.
         /// </summary>
-        UsePowerOf2Sizes = 1
+        UsePowerOf2Sizes = 1,
+        /// <summary>
+        /// Whether padding should not be used.
+        /// </summary>
+        NoPadding = 2
     }
 
     /// <summary>
     /// Represents the results of the collection stats command.
     /// </summary>
+#if NET452
     [Serializable]
+#endif
     [BsonSerializer(typeof(CommandResultSerializer<CollectionStatsResult>))]
     public class CollectionStatsResult : CommandResult
     {

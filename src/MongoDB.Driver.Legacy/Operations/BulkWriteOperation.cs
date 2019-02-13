@@ -1,4 +1,4 @@
-﻿/* Copyright 2010-2014 MongoDB Inc.
+/* Copyright 2010-present MongoDB Inc.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -21,7 +21,6 @@ using MongoDB.Bson;
 using MongoDB.Bson.Serialization;
 using MongoDB.Bson.Serialization.Serializers;
 using MongoDB.Driver.Core.Operations;
-using MongoDB.Driver.Sync;
 
 namespace MongoDB.Driver
 {
@@ -32,6 +31,7 @@ namespace MongoDB.Driver
     public sealed class BulkWriteOperation<TDocument>
     {
         // private fields
+        private bool? _bypassDocumentValidation;
         private readonly MongoCollection _collection;
         private readonly bool _isOrdered;
         private readonly List<WriteRequest> _requests = new List<WriteRequest>();
@@ -44,6 +44,19 @@ namespace MongoDB.Driver
             _isOrdered = isOrdered;
         }
 
+        // public properties
+        /// <summary>
+        /// Gets or sets a value indicating whether to bypass document validation.
+        /// </summary>
+        /// <value>
+        /// A value indicating whether to bypass document validation.
+        /// </value>
+        public bool? BypassDocumentValidation
+        {
+            get { return _bypassDocumentValidation; }
+            set { _bypassDocumentValidation = value; }
+        }
+
         // public methods
         /// <summary>
         /// Executes the bulk operation using the default write concern from the collection.
@@ -51,7 +64,7 @@ namespace MongoDB.Driver
         /// <returns>A BulkWriteResult.</returns>
         public BulkWriteResult<TDocument> Execute()
         {
-            return ExecuteHelper(_collection.Settings.WriteConcern ?? WriteConcern.Acknowledged);
+            return Execute(_collection.Settings.WriteConcern ?? WriteConcern.Acknowledged);
         }
 
         /// <summary>
@@ -72,8 +85,9 @@ namespace MongoDB.Driver
         /// Creates a builder for a new write request (either a remove or an update).
         /// </summary>
         /// <param name="query">The query.</param>
+        /// <param name="collation">The collation.</param>
         /// <returns>A FluentWriteRequestBuilder.</returns>
-        public BulkWriteRequestBuilder<TDocument> Find(IMongoQuery query)
+        public BulkWriteRequestBuilder<TDocument> Find(IMongoQuery query, Collation collation = null)
         {
             if (query == null)
             {
@@ -83,7 +97,7 @@ namespace MongoDB.Driver
             {
                 throw new InvalidOperationException("The bulk write operation has already been executed.");
             }
-            return new BulkWriteRequestBuilder<TDocument>(AddRequest, query);
+            return new BulkWriteRequestBuilder<TDocument>(AddRequest, query, collation);
         }
 
         /// <summary>
@@ -114,6 +128,11 @@ namespace MongoDB.Driver
         }
 
         private BulkWriteResult<TDocument> ExecuteHelper(WriteConcern writeConcern)
+        {
+            return _collection.UsingImplicitSession(session => ExecuteHelper(session, writeConcern));
+        }
+
+        private BulkWriteResult<TDocument> ExecuteHelper(IClientSessionHandle session, WriteConcern writeConcern)
         {
             if (_hasBeenExecuted)
             {
@@ -151,21 +170,20 @@ namespace MongoDB.Driver
 
             var operation = new BulkMixedWriteOperation(new CollectionNamespace(_collection.Database.Name, _collection.Name), requests, messageEncoderSettings)
             {
+                BypassDocumentValidation = _bypassDocumentValidation,
                 IsOrdered = _isOrdered,
+                RetryRequested = _collection.Database.Server.Settings.RetryWrites,
                 WriteConcern = writeConcern
             };
 
-            using (var binding = _collection.Database.Server.GetWriteBinding())
+            try
             {
-                try
-                {
-                    var result = operation.Execute(binding, CancellationToken.None);
-                    return BulkWriteResult<TDocument>.FromCore(result);
-                }
-                catch (MongoBulkWriteOperationException ex)
-                {
-                    throw MongoBulkWriteException<TDocument>.FromCore(ex);
-                }
+                var result = _collection.ExecuteWriteOperation(session, operation);
+                return BulkWriteResult<TDocument>.FromCore(result);
+            }
+            catch (MongoBulkWriteOperationException ex)
+            {
+                throw MongoBulkWriteException<TDocument>.FromCore(ex);
             }
         }
     }

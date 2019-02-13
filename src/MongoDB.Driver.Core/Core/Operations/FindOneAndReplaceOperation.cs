@@ -1,4 +1,4 @@
-﻿/* Copyright 2013-2014 MongoDB Inc.
+/* Copyright 2013-present MongoDB Inc.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -22,9 +22,11 @@ using MongoDB.Bson;
 using MongoDB.Bson.IO;
 using MongoDB.Bson.Serialization;
 using MongoDB.Driver.Core.Bindings;
+using MongoDB.Driver.Core.Connections;
 using MongoDB.Driver.Core.Misc;
 using MongoDB.Driver.Core.Operations.ElementNameValidators;
 using MongoDB.Driver.Core.WireProtocol.Messages.Encoders;
+using MongoDB.Shared;
 
 namespace MongoDB.Driver.Core.Operations
 {
@@ -35,6 +37,7 @@ namespace MongoDB.Driver.Core.Operations
     public class FindOneAndReplaceOperation<TResult> : FindAndModifyOperationBase<TResult>
     {
         // fields
+        private bool? _bypassDocumentValidation;
         private readonly BsonDocument _filter;
         private bool _isUpsert;
         private TimeSpan? _maxTime;
@@ -55,12 +58,24 @@ namespace MongoDB.Driver.Core.Operations
         public FindOneAndReplaceOperation(CollectionNamespace collectionNamespace, BsonDocument filter, BsonDocument replacement, IBsonSerializer<TResult> resultSerializer, MessageEncoderSettings messageEncoderSettings)
             : base(collectionNamespace, resultSerializer, messageEncoderSettings)
         {
-            _filter = Ensure.IsNotNull(filter, "filter");
-            _replacement = Ensure.IsNotNull(replacement, "replacement");
+            _filter = Ensure.IsNotNull(filter, nameof(filter));
+            _replacement = Ensure.IsNotNull(replacement, nameof(replacement));
             _returnDocument = ReturnDocument.Before;
         }
 
         // properties
+        /// <summary>
+        /// Gets or sets a value indicating whether to bypass document validation.
+        /// </summary>
+        /// <value>
+        /// A value indicating whether to bypass document validation.
+        /// </value>
+        public bool? BypassDocumentValidation
+        {
+            get { return _bypassDocumentValidation; }
+            set { _bypassDocumentValidation = value; }
+        }
+
         /// <summary>
         /// Gets the filter.
         /// </summary>
@@ -93,7 +108,7 @@ namespace MongoDB.Driver.Core.Operations
         public TimeSpan? MaxTime
         {
             get { return _maxTime; }
-            set { _maxTime = value; }
+            set { _maxTime = Ensure.IsNullOrInfiniteOrGreaterThanOrEqualToZero(value, nameof(value)); }
         }
 
         /// <summary>
@@ -144,18 +159,26 @@ namespace MongoDB.Driver.Core.Operations
         }
 
         // methods
-        internal override BsonDocument CreateCommand()
+        internal override BsonDocument CreateCommand(ICoreSessionHandle session, ConnectionDescription connectionDescription, long? transactionNumber)
         {
+            var serverVersion = connectionDescription.ServerVersion;
+            Feature.Collation.ThrowIfNotSupported(serverVersion, Collation);
+
+            var writeConcern = WriteConcernHelper.GetWriteConcernForCommand(session, WriteConcern, serverVersion, Feature.FindAndModifyWriteConcern);
             return new BsonDocument
             {
                 { "findAndModify", CollectionNamespace.CollectionName },
                 { "query", _filter },
-                { "sort", _sort, _sort != null },
                 { "update", _replacement },
-                { "new", _returnDocument == ReturnDocument.After },
+                { "new", true, _returnDocument == ReturnDocument.After },
+                { "sort", _sort, _sort != null },
                 { "fields", _projection, _projection != null },
-                { "upsert", _isUpsert },
-                { "maxTimeMS", () => _maxTime.Value.TotalMilliseconds, _maxTime.HasValue }
+                { "upsert", true, _isUpsert },
+                { "maxTimeMS", () => MaxTimeHelper.ToMaxTimeMS(_maxTime.Value), _maxTime.HasValue },
+                { "writeConcern", writeConcern, writeConcern != null },
+                { "bypassDocumentValidation", () => _bypassDocumentValidation.Value, _bypassDocumentValidation.HasValue && Feature.BypassDocumentValidation.IsSupported(serverVersion) },
+                { "collation", () => Collation.ToBsonDocument(), Collation != null },
+                { "txnNumber", () => transactionNumber, transactionNumber.HasValue }
             };
         }
 

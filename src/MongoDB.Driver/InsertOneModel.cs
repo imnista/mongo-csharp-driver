@@ -1,4 +1,4 @@
-﻿/* Copyright 2010-2014 MongoDB Inc.
+/* Copyright 2010-present MongoDB Inc.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -26,7 +26,9 @@ namespace MongoDB.Driver
     /// Model for inserting a single document.
     /// </summary>
     /// <typeparam name="TDocument">The type of the document.</typeparam>
+#if NET452
     [Serializable]
+#endif
     public sealed class InsertOneModel<TDocument> : WriteModel<TDocument>
     {
         // fields

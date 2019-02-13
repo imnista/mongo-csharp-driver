@@ -1,4 +1,4 @@
-﻿/* Copyright 2013-2014 MongoDB Inc.
+/* Copyright 2013-present MongoDB Inc.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -30,25 +30,57 @@ namespace MongoDB.Driver.Core.Bindings
         // fields
         private bool _disposed;
         private readonly IServer _server;
+        private readonly ICoreSessionHandle _session;
 
         // constructors
         /// <summary>
-        /// Initializes a new instance of the <see cref="ServerChannelSource"/> class.
+        /// Initializes a new instance of the <see cref="ServerChannelSource" /> class.
         /// </summary>
         /// <param name="server">The server.</param>
-        public ServerChannelSource(IServer server)
+        /// <param name="session">The session.</param>
+        public ServerChannelSource(IServer server, ICoreSessionHandle session)
         {
-            _server = Ensure.IsNotNull(server, "server");
+            _server = Ensure.IsNotNull(server, nameof(server));
+            _session = Ensure.IsNotNull(session, nameof(session));
         }
 
         // properties
+        /// <inheritdoc/>
+        public IServer Server
+        {
+            get { return _server; }
+        }
+
         /// <inheritdoc/>
         public ServerDescription ServerDescription
         {
             get { return _server.Description; }
         }
 
+        /// <inheritdoc/>
+        public ICoreSessionHandle Session
+        {
+            get { return _session; }
+        }
+
         // methods
+        /// <inheritdoc/>
+        public void Dispose()
+        {
+            if (!_disposed)
+            {
+                _session.Dispose();
+                _disposed = true;
+            }
+        }
+
+        /// <inheritdoc/>
+        public IChannelHandle GetChannel(CancellationToken cancellationToken)
+        {
+            ThrowIfDisposed();
+            return _server.GetChannel(cancellationToken);
+        }
+
         /// <inheritdoc/>
         public Task<IChannelHandle> GetChannelAsync(CancellationToken cancellationToken)
         {
@@ -56,21 +88,11 @@ namespace MongoDB.Driver.Core.Bindings
             return _server.GetChannelAsync(cancellationToken);
         }
 
-        /// <inheritdoc/>
-        public void Dispose()
-        {
-            if (!_disposed)
-            {
-                _disposed = true;
-                GC.SuppressFinalize(this);
-            }
-        }
-
         private void ThrowIfDisposed()
         {
             if (_disposed)
             {
-                throw new ObjectDisposedException(GetType().Name);
+                throw new ObjectDisposedException(GetType().FullName);
             }
         }
     }

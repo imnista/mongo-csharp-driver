@@ -1,4 +1,4 @@
-﻿/* Copyright 2013-2014 MongoDB Inc.
+/* Copyright 2013-present MongoDB Inc.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -13,22 +13,21 @@
 * limitations under the License.
 */
 
-using System;
 using System.Threading;
 using System.Threading.Tasks;
 using MongoDB.Driver.Core.Bindings;
-using MongoDB.Driver.Core.Connections;
 using MongoDB.Driver.Core.Misc;
 using MongoDB.Driver.Core.WireProtocol.Messages.Encoders;
 
 namespace MongoDB.Driver.Core.Operations
 {
-    internal class DeleteOpcodeOperationEmulator
+    internal class DeleteOpcodeOperationEmulator : IExecutableInRetryableWriteContext<WriteConcernResult>
     {
         // fields
         private readonly CollectionNamespace _collectionNamespace;
         private readonly DeleteRequest _request;
         private readonly MessageEncoderSettings _messageEncoderSettings;
+        private bool _retryRequested;
         private WriteConcern _writeConcern = WriteConcern.Acknowledged;
 
         // constructors
@@ -37,8 +36,8 @@ namespace MongoDB.Driver.Core.Operations
             DeleteRequest request,
             MessageEncoderSettings messageEncoderSettings)
         {
-            _collectionNamespace = Ensure.IsNotNull(collectionNamespace, "collectionNamespace");
-            _request = Ensure.IsNotNull(request, "request");
+            _collectionNamespace = Ensure.IsNotNull(collectionNamespace, nameof(collectionNamespace));
+            _request = Ensure.IsNotNull(request, nameof(request));
             _messageEncoderSettings = messageEncoderSettings;
         }
 
@@ -58,46 +57,82 @@ namespace MongoDB.Driver.Core.Operations
             get { return _messageEncoderSettings; }
         }
 
+        public bool RetryRequested
+        {
+            get { return _retryRequested; }
+            set { _retryRequested = value; }
+        }
+
         public WriteConcern WriteConcern
         {
             get { return _writeConcern; }
-            set { _writeConcern = Ensure.IsNotNull(value, "value"); }
+            set { _writeConcern = Ensure.IsNotNull(value, nameof(value)); }
         }
 
-        // methods
-        public async Task<WriteConcernResult> ExecuteAsync(IChannelHandle channel, CancellationToken cancellationToken)
+        // public methods
+        public WriteConcernResult Execute(RetryableWriteContext context, CancellationToken cancellationToken)
         {
-            Ensure.IsNotNull(channel, "channel");
+            Ensure.IsNotNull(context, nameof(context));
 
-            var requests = new[] { _request };
-
-            var operation = new BulkDeleteOperation(_collectionNamespace, requests, _messageEncoderSettings)
-            {
-                WriteConcern = _writeConcern
-            };
-
-            BulkWriteOperationResult bulkWriteResult;
-            MongoBulkWriteOperationException bulkWriteException = null;
+            var operation = CreateOperation();
+            BulkWriteOperationResult result;
+            MongoBulkWriteOperationException exception = null;
             try
             {
-                bulkWriteResult = await operation.ExecuteAsync(channel, cancellationToken).ConfigureAwait(false);
+                result = operation.Execute(context, cancellationToken);
             }
             catch (MongoBulkWriteOperationException ex)
             {
-                bulkWriteResult = ex.Result;
-                bulkWriteException = ex;
+                result = ex.Result;
+                exception = ex;
             }
 
-            var converter = new BulkWriteOperationResultConverter();
-            if (bulkWriteException != null)
+            return CreateResultOrThrow(context.Channel, result, exception);
+        }
+
+        public async Task<WriteConcernResult> ExecuteAsync(RetryableWriteContext context, CancellationToken cancellationToken)
+        {
+            Ensure.IsNotNull(context, nameof(context));
+
+            var operation = CreateOperation();
+            BulkWriteOperationResult result;
+            MongoBulkWriteOperationException exception = null;
+            try
             {
-                throw converter.ToWriteConcernException(channel.ConnectionDescription.ConnectionId, bulkWriteException);
+                result = await operation.ExecuteAsync(context, cancellationToken).ConfigureAwait(false);
+            }
+            catch (MongoBulkWriteOperationException ex)
+            {
+                result = ex.Result;
+                exception = ex;
+            }
+
+            return CreateResultOrThrow(context.Channel, result, exception);
+        }
+
+        // private methods
+        private BulkDeleteOperation CreateOperation()
+        {
+            var requests = new[] { _request };
+            return new BulkDeleteOperation(_collectionNamespace, requests, _messageEncoderSettings)
+            {
+                RetryRequested = _retryRequested,
+                WriteConcern = _writeConcern
+            };
+        }
+
+        private WriteConcernResult CreateResultOrThrow(IChannelHandle channel, BulkWriteOperationResult result, MongoBulkWriteOperationException exception)
+        {
+            var converter = new BulkWriteOperationResultConverter();
+            if (exception != null)
+            {
+                throw converter.ToWriteConcernException(channel.ConnectionDescription.ConnectionId, exception);
             }
             else
             {
                 if (_writeConcern.IsAcknowledged)
                 {
-                    return converter.ToWriteConcernResult(bulkWriteResult);
+                    return converter.ToWriteConcernResult(result);
                 }
                 else
                 {

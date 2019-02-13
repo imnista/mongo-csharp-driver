@@ -1,4 +1,4 @@
-﻿/* Copyright 2013-2014 MongoDB Inc.
+/* Copyright 2013-present MongoDB Inc.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -39,18 +39,24 @@ namespace MongoDB.Driver.Core.Bindings
         /// <param name="writeBinding">The write binding.</param>
         public SplitReadWriteBinding(IReadBinding readBinding, IWriteBinding writeBinding)
         {
-            _readBinding = Ensure.IsNotNull(readBinding, "readBinding");
-            _writeBinding = Ensure.IsNotNull(writeBinding, "writeBinding");
+            _readBinding = Ensure.IsNotNull(readBinding, nameof(readBinding));
+            _writeBinding = Ensure.IsNotNull(writeBinding, nameof(writeBinding));
+            Ensure.That(object.ReferenceEquals(_readBinding.Session, _writeBinding.Session), "The read and the write binding must have the same session.");
         }
 
         /// <summary>
-        /// Initializes a new instance of the <see cref="SplitReadWriteBinding"/> class.
+        /// Initializes a new instance of the <see cref="SplitReadWriteBinding" /> class.
         /// </summary>
         /// <param name="cluster">The cluster.</param>
         /// <param name="readPreference">The read preference.</param>
-        public SplitReadWriteBinding(ICluster cluster, ReadPreference readPreference)
-            : this(new ReadPreferenceBinding(cluster, readPreference), new WritableServerBinding(cluster))
+        /// <param name="session">The session.</param>
+        public SplitReadWriteBinding(ICluster cluster, ReadPreference readPreference, ICoreSessionHandle session)
         {
+            Ensure.IsNotNull(cluster, nameof(cluster));
+            Ensure.IsNotNull(readPreference, nameof(readPreference));
+            Ensure.IsNotNull(session, nameof(session));
+            _readBinding = new ReadPreferenceBinding(cluster, readPreference, session); // read binding owns session passed in
+            _writeBinding = new WritableServerBinding(cluster, session.Fork()); // write binding owns a forked copy
         }
 
         // properties
@@ -60,12 +66,32 @@ namespace MongoDB.Driver.Core.Bindings
             get { return _readBinding.ReadPreference; }
         }
 
+        /// <inheritdoc/>
+        public ICoreSessionHandle Session
+        {
+            get { return _readBinding.Session; } // both bindings have the same session
+        }
+
         // methods
+        /// <inheritdoc/>
+        public IChannelSourceHandle GetReadChannelSource(CancellationToken cancellationToken)
+        {
+            ThrowIfDisposed();
+            return _readBinding.GetReadChannelSource(cancellationToken);
+        }
+
         /// <inheritdoc/>
         public Task<IChannelSourceHandle> GetReadChannelSourceAsync(CancellationToken cancellationToken)
         {
             ThrowIfDisposed();
             return _readBinding.GetReadChannelSourceAsync(cancellationToken);
+        }
+
+        /// <inheritdoc/>
+        public IChannelSourceHandle GetWriteChannelSource(CancellationToken cancellationToken)
+        {
+            ThrowIfDisposed();
+            return _writeBinding.GetWriteChannelSource(cancellationToken);
         }
 
         /// <inheritdoc/>

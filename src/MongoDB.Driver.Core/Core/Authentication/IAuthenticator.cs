@@ -1,4 +1,4 @@
-﻿/* Copyright 2013-2014 MongoDB Inc.
+/* Copyright 2013-present MongoDB Inc.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -16,6 +16,7 @@
 using System;
 using System.Threading;
 using System.Threading.Tasks;
+using MongoDB.Bson;
 using MongoDB.Driver.Core.Connections;
 
 namespace MongoDB.Driver.Core.Authentication
@@ -39,7 +40,22 @@ namespace MongoDB.Driver.Core.Authentication
         /// <param name="connection">The connection.</param>
         /// <param name="description">The connection description.</param>
         /// <param name="cancellationToken">The cancellation token.</param>
+        void Authenticate(IConnection connection, ConnectionDescription description, CancellationToken cancellationToken);
+
+        /// <summary>
+        /// Authenticates the connection.
+        /// </summary>
+        /// <param name="connection">The connection.</param>
+        /// <param name="description">The connection description.</param>
+        /// <param name="cancellationToken">The cancellation token.</param>
         /// <returns>A Task.</returns>
         Task AuthenticateAsync(IConnection connection, ConnectionDescription description, CancellationToken cancellationToken);
+        
+        /// <summary>
+        /// Optionally customizes isMaster command.
+        /// </summary>
+        /// <param name="isMasterCommand">Initial isMaster command.</param>
+        /// <returns>Optionally mutated isMaster command.</returns>
+        BsonDocument CustomizeInitialIsMasterCommand(BsonDocument isMasterCommand);
     }
 }

@@ -1,4 +1,4 @@
-﻿/* Copyright 2010-2014 MongoDB Inc.
+/* Copyright 2010-present MongoDB Inc.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -21,6 +21,7 @@ using System.Net.Sockets;
 using System.Text;
 using MongoDB.Bson;
 using MongoDB.Driver.Core.Configuration;
+using MongoDB.Driver.Core.Misc;
 using MongoDB.Shared;
 
 namespace MongoDB.Driver
@@ -31,11 +32,14 @@ namespace MongoDB.Driver
     public class MongoServerSettings : IEquatable<MongoServerSettings>, IInheritableMongoClientSettings
     {
         // private fields
+        private string _applicationName;
         private Action<ClusterBuilder> _clusterConfigurator;
         private ConnectionMode _connectionMode;
         private TimeSpan _connectTimeout;
         private MongoCredentialStore _credentials;
         private GuidRepresentation _guidRepresentation;
+        private TimeSpan _heartbeatInterval;
+        private TimeSpan _heartbeatTimeout;
         private bool _ipv6;
         private TimeSpan _localThreshold;
         private TimeSpan _maxConnectionIdleTime;
@@ -43,10 +47,14 @@ namespace MongoDB.Driver
         private int _maxConnectionPoolSize;
         private int _minConnectionPoolSize;
         private TimeSpan _operationTimeout;
+        private ReadConcern _readConcern;
         private UTF8Encoding _readEncoding;
         private ReadPreference _readPreference;
         private string _replicaSetName;
+        private bool _retryWrites;
+        private string _sdamLogFilename;
         private List<MongoServerAddress> _servers;
+        private TimeSpan _serverSelectionTimeout;
         private TimeSpan _socketTimeout;
         private SslSettings _sslSettings;
         private bool _useSsl;
@@ -67,10 +75,13 @@ namespace MongoDB.Driver
         /// </summary>
         public MongoServerSettings()
         {
+            _applicationName = null;
             _connectionMode = ConnectionMode.Automatic;
             _connectTimeout = MongoDefaults.ConnectTimeout;
             _credentials = new MongoCredentialStore(new MongoCredential[0]);
             _guidRepresentation = MongoDefaults.GuidRepresentation;
+            _heartbeatInterval = ServerSettings.DefaultHeartbeatInterval;
+            _heartbeatTimeout = ServerSettings.DefaultHeartbeatTimeout;
             _ipv6 = false;
             _localThreshold = MongoDefaults.LocalThreshold;
             _maxConnectionIdleTime = MongoDefaults.MaxConnectionIdleTime;
@@ -78,10 +89,13 @@ namespace MongoDB.Driver
             _maxConnectionPoolSize = MongoDefaults.MaxConnectionPoolSize;
             _minConnectionPoolSize = MongoDefaults.MinConnectionPoolSize;
             _operationTimeout = MongoDefaults.OperationTimeout;
+            _readConcern = ReadConcern.Default;
             _readEncoding = null;
             _readPreference = ReadPreference.Primary;
             _replicaSetName = null;
+            _retryWrites = false;
             _servers = new List<MongoServerAddress> { new MongoServerAddress("localhost") };
+            _serverSelectionTimeout = MongoDefaults.ServerSelectionTimeout;
             _socketTimeout = MongoDefaults.SocketTimeout;
             _sslSettings = null;
             _useSsl = false;
@@ -100,6 +114,19 @@ namespace MongoDB.Driver
         public AddressFamily AddressFamily
         {
             get { return _ipv6 ? AddressFamily.InterNetworkV6 : AddressFamily.InterNetwork; }
+        }
+
+        /// <summary>
+        /// Gets or sets the application name.
+        /// </summary>
+        public string ApplicationName
+        {
+            get { return _applicationName; }
+            set
+            {
+                if (_isFrozen) { throw new InvalidOperationException("MongoServerSettings is frozen."); }
+                _applicationName = ApplicationNameHelper.EnsureApplicationNameIsValid(value, nameof(value));
+            }
         }
 
         /// <summary>
@@ -142,8 +169,29 @@ namespace MongoDB.Driver
         }
 
         /// <summary>
+        /// Gets or sets the credential.
+        /// </summary>
+        public MongoCredential Credential
+        {
+            get { return _credentials.SingleOrDefault(); }
+            set
+            {
+                if (_isFrozen) { throw new InvalidOperationException("MongoServerSettings is frozen."); }
+                if (value == null)
+                {
+                    _credentials = new MongoCredentialStore(Enumerable.Empty<MongoCredential>());
+                }
+                else
+                {
+                    _credentials = new MongoCredentialStore(new[] { value });
+                }
+            }
+        }
+
+        /// <summary>
         /// Gets or sets the credentials.
         /// </summary>
+        [Obsolete("Use Credential instead. Using multiple credentials is deprecated.")]
         public IEnumerable<MongoCredential> Credentials
         {
             get { return _credentials; }
@@ -168,6 +216,32 @@ namespace MongoDB.Driver
             {
                 if (_isFrozen) { throw new InvalidOperationException("MongoServerSettings is frozen."); }
                 _guidRepresentation = value;
+            }
+        }
+
+        /// <summary>
+        /// Gets or sets the heartbeat interval.
+        /// </summary>
+        public TimeSpan HeartbeatInterval
+        {
+            get { return _heartbeatInterval; }
+            set
+            {
+                if (_isFrozen) { throw new InvalidOperationException("MongoServerSettings is frozen."); }
+                _heartbeatInterval = value;
+            }
+        }
+
+        /// <summary>
+        /// Gets or sets the heartbeat timeout.
+        /// </summary>
+        public TimeSpan HeartbeatTimeout
+        {
+            get { return _heartbeatTimeout; }
+            set
+            {
+                if (_isFrozen) { throw new InvalidOperationException("MongoServerSettings is frozen."); }
+                _heartbeatTimeout = value;
             }
         }
 
@@ -271,6 +345,19 @@ namespace MongoDB.Driver
         }
 
         /// <summary>
+        /// Gets or sets the read concern.
+        /// </summary>
+        public ReadConcern ReadConcern
+        {
+            get { return _readConcern; }
+            set
+            {
+                if (_isFrozen) { throw new InvalidOperationException("MongoServerSettings is frozen."); }
+                _readConcern = Ensure.IsNotNull(value, nameof(value));
+            }
+        }
+
+        /// <summary>
         /// Gets or sets the Read Encoding.
         /// </summary>
         public UTF8Encoding ReadEncoding
@@ -314,6 +401,32 @@ namespace MongoDB.Driver
         }
 
         /// <summary>
+        /// Gets or sets whether to retry writes.
+        /// </summary>
+        public bool RetryWrites
+        {
+            get { return _retryWrites; }
+            set
+            {
+                if (_isFrozen) { throw new InvalidOperationException("MongoServerSettings is frozen."); }
+                _retryWrites = value;
+            }
+        }
+        
+        /// <summary>
+        /// Gets or set the name of the SDAM log file. Null turns logging off. stdout will log to console.
+        /// </summary>
+        public string SdamLogFilename
+        {
+            get { return _sdamLogFilename; }
+            set
+            {
+                if (_isFrozen) { throw new InvalidOperationException("MongoClientSettings is frozen."); }
+                _sdamLogFilename = value;
+            }
+        }
+
+        /// <summary>
         /// Gets or sets the address of the server (see also Servers if using more than one address).
         /// </summary>
         public MongoServerAddress Server
@@ -344,6 +457,20 @@ namespace MongoDB.Driver
                     throw new ArgumentNullException("value");
                 }
                 _servers = new List<MongoServerAddress>(value);
+            }
+        }
+
+        /// <summary>
+        /// Gets or sets the server selection timeout.
+        /// </summary>
+        /// <exception cref="System.InvalidOperationException">MongoServerSettings is frozen.</exception>
+        public TimeSpan ServerSelectionTimeout
+        {
+            get { return _serverSelectionTimeout; }
+            set
+            {
+                if (_isFrozen) { throw new InvalidOperationException("MongoServerSettings is frozen."); }
+                _serverSelectionTimeout = value;
             }
         }
 
@@ -491,21 +618,30 @@ namespace MongoDB.Driver
         public static MongoServerSettings FromClientSettings(MongoClientSettings clientSettings)
         {
             var serverSettings = new MongoServerSettings();
+            serverSettings.ApplicationName = clientSettings.ApplicationName;
             serverSettings.ClusterConfigurator = clientSettings.ClusterConfigurator;
             serverSettings.ConnectionMode = clientSettings.ConnectionMode;
             serverSettings.ConnectTimeout = clientSettings.ConnectTimeout;
+#pragma warning disable 618
             serverSettings.Credentials = clientSettings.Credentials;
+#pragma warning restore
             serverSettings.GuidRepresentation = clientSettings.GuidRepresentation;
+            serverSettings.HeartbeatInterval = clientSettings.HeartbeatInterval;
+            serverSettings.HeartbeatTimeout = clientSettings.HeartbeatTimeout;
             serverSettings.IPv6 = clientSettings.IPv6;
             serverSettings.MaxConnectionIdleTime = clientSettings.MaxConnectionIdleTime;
             serverSettings.MaxConnectionLifeTime = clientSettings.MaxConnectionLifeTime;
             serverSettings.MaxConnectionPoolSize = clientSettings.MaxConnectionPoolSize;
             serverSettings.MinConnectionPoolSize = clientSettings.MinConnectionPoolSize;
+            serverSettings.ReadConcern = clientSettings.ReadConcern;
             serverSettings.ReadEncoding = clientSettings.ReadEncoding;
             serverSettings.ReadPreference = clientSettings.ReadPreference;
             serverSettings.ReplicaSetName = clientSettings.ReplicaSetName;
+            serverSettings.RetryWrites = clientSettings.RetryWrites;
             serverSettings.LocalThreshold = clientSettings.LocalThreshold;
+            serverSettings.SdamLogFilename = clientSettings.SdamLogFilename;
             serverSettings.Servers = new List<MongoServerAddress>(clientSettings.Servers);
+            serverSettings.ServerSelectionTimeout = clientSettings.ServerSelectionTimeout;
             serverSettings.SocketTimeout = clientSettings.SocketTimeout;
             serverSettings.SslSettings = (clientSettings.SslSettings == null) ? null : clientSettings.SslSettings.Clone();
             serverSettings.UseSsl = clientSettings.UseSsl;
@@ -524,20 +660,17 @@ namespace MongoDB.Driver
         /// <returns>A MongoServerSettings.</returns>
         public static MongoServerSettings FromUrl(MongoUrl url)
         {
-            var credential = MongoCredential.FromComponents(
-                url.AuthenticationMechanism,
-                url.AuthenticationSource ?? url.DatabaseName,
-                url.Username,
-                url.Password);
+            var credential = url.GetCredential();
 
             var serverSettings = new MongoServerSettings();
+            serverSettings.ApplicationName = url.ApplicationName;
             serverSettings.ConnectionMode = url.ConnectionMode;
             serverSettings.ConnectTimeout = url.ConnectTimeout;
             if (credential != null)
             {
                 foreach (var property in url.AuthenticationMechanismProperties)
                 {
-                    if (property.Key.Equals("CANONICALIZE_HOST_NAME", StringComparison.InvariantCultureIgnoreCase))
+                    if (property.Key.Equals("CANONICALIZE_HOST_NAME", StringComparison.OrdinalIgnoreCase))
                     {
                         credential = credential.WithMechanismProperty(property.Key, bool.Parse(property.Value));
                     }
@@ -546,19 +679,25 @@ namespace MongoDB.Driver
                         credential = credential.WithMechanismProperty(property.Key, property.Value);
                     }
                 }
-                serverSettings.Credentials = new[] { credential };
+                serverSettings.Credential = credential;
             }
             serverSettings.GuidRepresentation = url.GuidRepresentation;
+            serverSettings.HeartbeatInterval = url.HeartbeatInterval;
+            serverSettings.HeartbeatTimeout = url.HeartbeatTimeout;
             serverSettings.IPv6 = url.IPv6;
             serverSettings.MaxConnectionIdleTime = url.MaxConnectionIdleTime;
             serverSettings.MaxConnectionLifeTime = url.MaxConnectionLifeTime;
             serverSettings.MaxConnectionPoolSize = url.MaxConnectionPoolSize;
             serverSettings.MinConnectionPoolSize = url.MinConnectionPoolSize;
+            serverSettings.ReadConcern = new ReadConcern(url.ReadConcernLevel);
             serverSettings.ReadEncoding = null; // ReadEncoding must be provided in code
             serverSettings.ReadPreference = (url.ReadPreference == null) ? ReadPreference.Primary : url.ReadPreference;
             serverSettings.ReplicaSetName = url.ReplicaSetName;
+            serverSettings.RetryWrites = url.RetryWrites ?? false;
             serverSettings.LocalThreshold = url.LocalThreshold;
+            serverSettings.SdamLogFilename = null; // SdamLogFilename must be provided in code
             serverSettings.Servers = new List<MongoServerAddress>(url.Servers);
+            serverSettings.ServerSelectionTimeout = url.ServerSelectionTimeout;
             serverSettings.SocketTimeout = url.SocketTimeout;
             serverSettings.SslSettings = null; // SSL settings must be provided in code
             serverSettings.UseSsl = url.UseSsl;
@@ -578,22 +717,29 @@ namespace MongoDB.Driver
         public MongoServerSettings Clone()
         {
             var clone = new MongoServerSettings();
+            clone._applicationName = _applicationName;
             clone._clusterConfigurator = _clusterConfigurator;
             clone._connectionMode = _connectionMode;
             clone._connectTimeout = _connectTimeout;
             clone._credentials = _credentials;
             clone._guidRepresentation = _guidRepresentation;
+            clone._heartbeatInterval = _heartbeatInterval;
+            clone._heartbeatTimeout = _heartbeatTimeout;
             clone._ipv6 = _ipv6;
             clone._maxConnectionIdleTime = _maxConnectionIdleTime;
             clone._maxConnectionLifeTime = _maxConnectionLifeTime;
             clone._maxConnectionPoolSize = _maxConnectionPoolSize;
             clone._minConnectionPoolSize = _minConnectionPoolSize;
             clone._operationTimeout = _operationTimeout;
+            clone._readConcern = _readConcern;
             clone._readEncoding = _readEncoding;
             clone._readPreference = _readPreference;
             clone._replicaSetName = _replicaSetName;
+            clone._retryWrites = _retryWrites;
             clone._localThreshold = _localThreshold;
+            clone._sdamLogFilename = _sdamLogFilename;
             clone._servers = new List<MongoServerAddress>(_servers);
+            clone._serverSelectionTimeout = _serverSelectionTimeout;
             clone._socketTimeout = _socketTimeout;
             clone._sslSettings = (_sslSettings == null) ? null : _sslSettings.Clone();
             clone._useSsl = _useSsl;
@@ -629,22 +775,29 @@ namespace MongoDB.Driver
             if (object.ReferenceEquals(obj, null) || GetType() != obj.GetType()) { return false; }
             var rhs = (MongoServerSettings)obj;
             return
+                _applicationName == rhs._applicationName &&
                 object.ReferenceEquals(_clusterConfigurator, rhs._clusterConfigurator) &&
                _connectionMode == rhs._connectionMode &&
                _connectTimeout == rhs._connectTimeout &&
                _credentials == rhs._credentials &&
                _guidRepresentation == rhs._guidRepresentation &&
+               _heartbeatInterval == rhs._heartbeatInterval &&
+               _heartbeatTimeout == rhs._heartbeatTimeout &&
                _ipv6 == rhs._ipv6 &&
                _maxConnectionIdleTime == rhs._maxConnectionIdleTime &&
                _maxConnectionLifeTime == rhs._maxConnectionLifeTime &&
                _maxConnectionPoolSize == rhs._maxConnectionPoolSize &&
                _minConnectionPoolSize == rhs._minConnectionPoolSize &&
                _operationTimeout == rhs._operationTimeout &&
+               object.Equals(_readConcern, rhs._readConcern) &&
                object.Equals(_readEncoding, rhs._readEncoding) &&
                _readPreference.Equals(rhs._readPreference) &&
                _replicaSetName == rhs._replicaSetName &&
+               _retryWrites == rhs._retryWrites &&
                _localThreshold == rhs._localThreshold &&
+               _sdamLogFilename == rhs._sdamLogFilename &&
                _servers.SequenceEqual(rhs._servers) &&
+               _serverSelectionTimeout == rhs._serverSelectionTimeout &&
                _socketTimeout == rhs._socketTimeout &&
                _sslSettings == rhs._sslSettings &&
                _useSsl == rhs._useSsl &&
@@ -698,22 +851,29 @@ namespace MongoDB.Driver
             }
 
             return new Hasher()
+                .Hash(_applicationName)
                 .Hash(_clusterConfigurator)
                 .Hash(_connectionMode)
                 .Hash(_connectTimeout)
                 .Hash(_credentials)
                 .Hash(_guidRepresentation)
+                .Hash(_heartbeatInterval)
+                .Hash(_heartbeatTimeout)
                 .Hash(_ipv6)
                 .Hash(_maxConnectionIdleTime)
                 .Hash(_maxConnectionLifeTime)
                 .Hash(_maxConnectionPoolSize)
                 .Hash(_minConnectionPoolSize)
                 .Hash(_operationTimeout)
+                .Hash(_readConcern)
                 .Hash(_readEncoding)
                 .Hash(_readPreference)
                 .Hash(_replicaSetName)
+                .Hash(_retryWrites)
                 .Hash(_localThreshold)
+                .Hash(_sdamLogFilename)
                 .HashElements(_servers)
+                .Hash(_serverSelectionTimeout)
                 .Hash(_socketTimeout)
                 .Hash(_sslSettings)
                 .Hash(_useSsl)
@@ -737,24 +897,37 @@ namespace MongoDB.Driver
             }
 
             var parts = new List<string>();
+            if (_applicationName != null)
+            {
+                parts.Add(string.Format("ApplicationName={0}", _applicationName));
+            }
             parts.Add(string.Format("ConnectionMode={0}", _connectionMode));
             parts.Add(string.Format("ConnectTimeout={0}", _connectTimeout));
             parts.Add(string.Format("Credentials={{{0}}}", _credentials));
             parts.Add(string.Format("GuidRepresentation={0}", _guidRepresentation));
+            parts.Add(string.Format("HeartbeatInterval={0}", _heartbeatInterval));
+            parts.Add(string.Format("HeartbeatTimeout={0}", _heartbeatTimeout));
             parts.Add(string.Format("IPv6={0}", _ipv6));
             parts.Add(string.Format("MaxConnectionIdleTime={0}", _maxConnectionIdleTime));
             parts.Add(string.Format("MaxConnectionLifeTime={0}", _maxConnectionLifeTime));
             parts.Add(string.Format("MaxConnectionPoolSize={0}", _maxConnectionPoolSize));
             parts.Add(string.Format("MinConnectionPoolSize={0}", _minConnectionPoolSize));
             parts.Add(string.Format("OperationTimeout={0}", _operationTimeout));
+            parts.Add(string.Format("ReadConcern={0}", _readConcern));
             if (_readEncoding != null)
             {
                 parts.Add("ReadEncoding=UTF8Encoding");
             }
             parts.Add(string.Format("ReadPreference={0}", _readPreference));
             parts.Add(string.Format("ReplicaSetName={0}", _replicaSetName));
+            parts.Add(string.Format("RetryWrites={0}", _retryWrites));
             parts.Add(string.Format("LocalThreshold={0}", _localThreshold));
+            if (_sdamLogFilename != null)
+            {
+                parts.Add($"SDAMLogFilename={_sdamLogFilename}");
+            }
             parts.Add(string.Format("Servers={0}", string.Join(",", _servers.Select(s => s.ToString()).ToArray())));
+            parts.Add(string.Format("ServerSelectionTimeout={0}", _serverSelectionTimeout));
             parts.Add(string.Format("SocketTimeout={0}", _socketTimeout));
             if (_sslSettings != null)
             {
@@ -776,10 +949,13 @@ namespace MongoDB.Driver
         internal ClusterKey ToClusterKey()
         {
             return new ClusterKey(
+                _applicationName,
                 _clusterConfigurator,
                 _connectionMode,
                 _connectTimeout,
                 _credentials.ToList(),
+                _heartbeatInterval,
+                _heartbeatTimeout,
                 _ipv6,
                 _localThreshold,
                 _maxConnectionIdleTime,
@@ -787,7 +963,9 @@ namespace MongoDB.Driver
                 _maxConnectionPoolSize,
                 _minConnectionPoolSize,
                 _replicaSetName,
+                _sdamLogFilename,
                 _servers.ToList(),
+                _serverSelectionTimeout,
                 _socketTimeout,
                 _sslSettings,
                 _useSsl,

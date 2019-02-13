@@ -1,4 +1,4 @@
-﻿/* Copyright 2010-2014 MongoDB Inc.
+/* Copyright 2010-present MongoDB Inc.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -24,7 +24,9 @@ namespace MongoDB.Driver.Core.Operations
     /// <summary>
     /// Represents the result of a bulk write operation.
     /// </summary>
+#if NET452
     [Serializable]
+#endif
     public abstract class BulkWriteOperationResult
     {
         // fields
@@ -131,7 +133,9 @@ namespace MongoDB.Driver.Core.Operations
         /// <summary>
         /// Represents the result of an acknowledged bulk write operation.
         /// </summary>
-        [Serializable]
+#if NET452
+    [Serializable]
+#endif
         public class Acknowledged : BulkWriteOperationResult
         {
             // fields
@@ -223,7 +227,9 @@ namespace MongoDB.Driver.Core.Operations
         /// <summary>
         /// Represents the result of an unacknowledged BulkWrite operation.
         /// </summary>
-        [Serializable]
+#if NET452
+    [Serializable]
+#endif
         public class Unacknowledged : BulkWriteOperationResult
         {
             // constructors

@@ -1,4 +1,4 @@
-﻿/* Copyright 2013-2014 MongoDB Inc.
+/* Copyright 2013-present MongoDB Inc.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -19,8 +19,10 @@ using System.Threading.Tasks;
 using MongoDB.Bson;
 using MongoDB.Bson.Serialization.Serializers;
 using MongoDB.Driver.Core.Bindings;
+using MongoDB.Driver.Core.Connections;
 using MongoDB.Driver.Core.Misc;
 using MongoDB.Driver.Core.WireProtocol.Messages.Encoders;
+using MongoDB.Shared;
 
 namespace MongoDB.Driver.Core.Operations
 {
@@ -32,7 +34,9 @@ namespace MongoDB.Driver.Core.Operations
         // fields
         private readonly CollectionNamespace _collectionNamespace;
         private readonly string _indexName;
+        private TimeSpan? _maxTime;
         private readonly MessageEncoderSettings _messageEncoderSettings;
+        private WriteConcern _writeConcern;
 
         // constructors
         /// <summary>
@@ -60,9 +64,9 @@ namespace MongoDB.Driver.Core.Operations
             string indexName,
             MessageEncoderSettings messageEncoderSettings)
         {
-            _collectionNamespace = Ensure.IsNotNull(collectionNamespace, "collectionNamespace");
-            _indexName = Ensure.IsNotNullOrEmpty(indexName, "indexName");
-            _messageEncoderSettings = Ensure.IsNotNull(messageEncoderSettings, "messageEncoderSettings");
+            _collectionNamespace = Ensure.IsNotNull(collectionNamespace, nameof(collectionNamespace));
+            _indexName = Ensure.IsNotNullOrEmpty(indexName, nameof(indexName));
+            _messageEncoderSettings = Ensure.IsNotNull(messageEncoderSettings, nameof(messageEncoderSettings));
         }
 
         // properties
@@ -99,34 +103,104 @@ namespace MongoDB.Driver.Core.Operations
             get { return _messageEncoderSettings; }
         }
 
-        // methods
-        internal BsonDocument CreateCommand()
+        /// <summary>
+        /// Gets or sets the write concern.
+        /// </summary>
+        /// <value>
+        /// The write concern.
+        /// </value>
+        public WriteConcern WriteConcern
         {
+            get { return _writeConcern; }
+            set { _writeConcern = value; }
+        }
+        
+        /// <summary>
+        /// Gets or sets the maximum time.
+        /// </summary>
+        /// <value>The maximum time.</value>
+        public TimeSpan? MaxTime
+        {
+            get { return _maxTime; }
+            set { _maxTime = Ensure.IsNullOrInfiniteOrGreaterThanOrEqualToZero(value, nameof(value)); }
+        }
+
+        // methods
+        internal BsonDocument CreateCommand(ICoreSessionHandle session, ConnectionDescription connectionDescription)
+        {
+            var writeConcern = WriteConcernHelper.GetWriteConcernForCommandThatWrites(session, _writeConcern, connectionDescription.ServerVersion);
             return new BsonDocument
             {
                 { "dropIndexes", _collectionNamespace.CollectionName },
-                { "index", _indexName }
+                { "index", _indexName },
+                { "maxTimeMS", () => MaxTimeHelper.ToMaxTimeMS(_maxTime.Value), _maxTime.HasValue },
+                { "writeConcern", writeConcern, writeConcern != null }
             };
+        }
+
+        private WriteCommandOperation<BsonDocument> CreateOperation(ICoreSessionHandle session, ConnectionDescription connectionDescription)
+        {
+            var command = CreateCommand(session, connectionDescription);
+            return new WriteCommandOperation<BsonDocument>(_collectionNamespace.DatabaseNamespace, command, BsonDocumentSerializer.Instance, _messageEncoderSettings);
+        }
+
+        /// <inheritdoc/>
+        public BsonDocument Execute(IWriteBinding binding, CancellationToken cancellationToken)
+        {
+            Ensure.IsNotNull(binding, nameof(binding));
+
+            using (var channelSource = binding.GetWriteChannelSource(cancellationToken))
+            using (var channel = channelSource.GetChannel(cancellationToken))
+            using (var channelBinding = new ChannelReadWriteBinding(channelSource.Server, channel, binding.Session.Fork()))
+            {
+                var operation = CreateOperation(channelBinding.Session, channel.ConnectionDescription);
+                BsonDocument result;
+                try
+                {
+                    result = operation.Execute(channelBinding, cancellationToken);
+                }
+                catch (MongoCommandException ex)
+                {
+                    if (!ShouldIgnoreException(ex))
+                    {
+                        throw;
+                    }
+                    result = ex.Result;
+                }
+                return result;
+            }
         }
 
         /// <inheritdoc/>
         public async Task<BsonDocument> ExecuteAsync(IWriteBinding binding, CancellationToken cancellationToken)
         {
-            Ensure.IsNotNull(binding, "binding");
-            var command = CreateCommand();
-            var operation = new WriteCommandOperation<BsonDocument>(_collectionNamespace.DatabaseNamespace, command, BsonDocumentSerializer.Instance, _messageEncoderSettings);
-            try
+            Ensure.IsNotNull(binding, nameof(binding));
+
+            using (var channelSource = await binding.GetWriteChannelSourceAsync(cancellationToken).ConfigureAwait(false))
+            using (var channel = await channelSource.GetChannelAsync(cancellationToken).ConfigureAwait(false))
+            using (var channelBinding = new ChannelReadWriteBinding(channelSource.Server, channel, binding.Session.Fork()))
             {
-                return await operation.ExecuteAsync(binding, cancellationToken).ConfigureAwait(false);
-            }
-            catch (MongoCommandException ex)
-            {
-                if (ex.ErrorMessage != null && ex.ErrorMessage.Contains("ns not found"))
+                var operation = CreateOperation(channelBinding.Session, channel.ConnectionDescription);
+                BsonDocument result;
+                try
                 {
-                    return ex.Result;
+                    result = await operation.ExecuteAsync(channelBinding, cancellationToken).ConfigureAwait(false);
                 }
-                throw;
+                catch (MongoCommandException ex)
+                {
+                    if (!ShouldIgnoreException(ex))
+                    {
+                        throw;
+                    }
+                    result = ex.Result;
+                }
+                return result;
             }
+        }
+
+        private bool ShouldIgnoreException(MongoCommandException ex)
+        {
+            return ex.ErrorMessage != null && ex.ErrorMessage.Contains("ns not found");
         }
     }
 }

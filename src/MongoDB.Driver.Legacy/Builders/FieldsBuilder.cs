@@ -1,4 +1,4 @@
-﻿/* Copyright 2010-2014 MongoDB Inc.
+/* Copyright 2010-present MongoDB Inc.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -108,7 +108,9 @@ namespace MongoDB.Driver.Builders
     /// <summary>
     /// A builder for specifying which fields of a document the server should return.
     /// </summary>
+#if NET452
     [Serializable]
+#endif
     [BsonSerializer(typeof(FieldsBuilder.Serializer))]
     public class FieldsBuilder : BuilderBase, IMongoFields
     {
@@ -309,7 +311,9 @@ namespace MongoDB.Driver.Builders
     /// A builder for specifying which fields of a document the server should return.
     /// </summary>
     /// <typeparam name="TDocument">The type of the document.</typeparam>
+#if NET452
     [Serializable]
+#endif
     [BsonSerializer(typeof(FieldsBuilder<>.Serializer))]
     public class FieldsBuilder<TDocument> : BuilderBase, IMongoFields
     {

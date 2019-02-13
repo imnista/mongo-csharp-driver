@@ -1,4 +1,4 @@
-﻿/* Copyright 2013-2014 MongoDB Inc.
+/* Copyright 2013-present MongoDB Inc.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -34,7 +34,7 @@ namespace MongoDB.Driver.Core.WireProtocol.Messages.Encoders
         /// <param name="documentSerializer">The document serializer.</param>
         public ReplyMessageEncoderSelector(IBsonSerializer<TDocument> documentSerializer)
         {
-            _documentSerializer = Ensure.IsNotNull(documentSerializer, "documentSerializer");
+            _documentSerializer = Ensure.IsNotNull(documentSerializer, nameof(documentSerializer));
         }
 
         // methods        

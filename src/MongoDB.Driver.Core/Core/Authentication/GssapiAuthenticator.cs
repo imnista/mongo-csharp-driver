@@ -1,4 +1,4 @@
-﻿/* Copyright 2010-2014 MongoDB Inc.
+/* Copyright 2010-present MongoDB Inc.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -32,8 +32,9 @@ namespace MongoDB.Driver.Core.Authentication
     {
         // constants
         private const string __canonicalizeHostNamePropertyName = "CANONICALIZE_HOST_NAME";
+        private const string __realmPropertyName = "REALM";
         private const string __serviceNamePropertyName = "SERVICE_NAME";
-        private const string __serviceRealmPropertyName = "REALM";
+        private const string __serviceRealmPropertyName = "SERVICE_REALM";
 
         // static properties
         /// <summary>
@@ -67,6 +68,18 @@ namespace MongoDB.Driver.Core.Authentication
         public static string MechanismName
         {
             get { return "GSSAPI"; }
+        }
+
+        /// <summary>
+        /// Gets the name of the realm property.
+        /// </summary>
+        /// <value>
+        /// The name of the realm property.
+        /// </value>
+        [Obsolete("Use ServiceRealmPropertyName")]
+        public static string RealmPropertyName
+        {
+            get { return __realmPropertyName; }
         }
 
         /// <summary>
@@ -143,6 +156,7 @@ namespace MongoDB.Driver.Core.Authentication
                             serviceName = (string)pair.Value;
                             break;
                         case __serviceRealmPropertyName:
+                        case __realmPropertyName:
                             realm = (string)pair.Value;
                             break;
                         case __canonicalizeHostNamePropertyName:
@@ -173,7 +187,7 @@ namespace MongoDB.Driver.Core.Authentication
                 _serviceName = serviceName;
                 _canonicalizeHostName = canonicalizeHostName;
                 _realm = realm;
-                _username = Ensure.IsNotNullOrEmpty(username, "username");
+                _username = Ensure.IsNotNullOrEmpty(username, nameof(username));
                 _password = password;
             }
 
@@ -182,10 +196,10 @@ namespace MongoDB.Driver.Core.Authentication
                 get { return MechanismName; }
             }
 
-            public ISaslStep Initialize(IConnection connection, ConnectionDescription description)
+            public ISaslStep Initialize(IConnection connection, SaslConversation conversation, ConnectionDescription description)
             {
-                Ensure.IsNotNull(connection, "connection");
-                Ensure.IsNotNull(description, "description");
+                Ensure.IsNotNull(connection, nameof(connection));
+                Ensure.IsNotNull(description, nameof(description));
 
                 string hostName;
                 var dnsEndPoint = connection.EndPoint as DnsEndPoint;
@@ -204,24 +218,30 @@ namespace MongoDB.Driver.Core.Authentication
 
                 if (_canonicalizeHostName)
                 {
+#if NETSTANDARD1_5 || NETSTANDARD1_6
+                    var entry = Dns.GetHostEntryAsync(hostName).GetAwaiter().GetResult();
+#else
                     var entry = Dns.GetHostEntry(hostName);
+#endif
                     if (entry != null)
                     {
                         hostName = entry.HostName;
                     }
                 }
 
-                return new FirstStep(_serviceName, hostName, _realm, _username, _password);
+                return new FirstStep(_serviceName, hostName, _realm, _username, _password, conversation);
             }
         }
 
         private class FirstStep : ISaslStep
         {
             private readonly string _authorizationId;
+            private byte[] _bytesToSendToServer;
+            private readonly Sspi.SecurityContext _context;
             private readonly SecureString _password;
             private readonly string _servicePrincipalName;
 
-            public FirstStep(string serviceName, string hostName, string realm, string username, SecureString password)
+            public FirstStep(string serviceName, string hostName, string realm, string username, SecureString password, SaslConversation conversation)
             {
                 _authorizationId = username;
                 _password = password;
@@ -230,20 +250,7 @@ namespace MongoDB.Driver.Core.Authentication
                 {
                     _servicePrincipalName += "@" + realm;
                 }
-            }
 
-            public byte[] BytesToSendToServer
-            {
-                get { return new byte[0]; }
-            }
-
-            public bool IsComplete
-            {
-                get { return false; }
-            }
-
-            public ISaslStep Transition(SaslConversation conversation, byte[] bytesReceivedFromServer)
-            {
                 SecurityCredential securityCredential;
                 try
                 {
@@ -255,11 +262,9 @@ namespace MongoDB.Driver.Core.Authentication
                     throw new MongoAuthenticationException(conversation.ConnectionId, "Unable to acquire security credential.", ex);
                 }
 
-                byte[] bytesToSendToServer;
-                Sspi.SecurityContext context;
                 try
                 {
-                    context = Sspi.SecurityContext.Initialize(securityCredential, _servicePrincipalName, bytesReceivedFromServer, out bytesToSendToServer);
+                    _context = Sspi.SecurityContext.Initialize(securityCredential, _servicePrincipalName, null, out _bytesToSendToServer);
                 }
                 catch (Win32Exception ex)
                 {
@@ -272,13 +277,36 @@ namespace MongoDB.Driver.Core.Authentication
                         throw new MongoAuthenticationException(conversation.ConnectionId, "Unable to initialize security context.", ex);
                     }
                 }
+            }
 
-                if (!context.IsInitialized)
+            public byte[] BytesToSendToServer
+            {
+                get { return _bytesToSendToServer; }
+            }
+
+            public bool IsComplete
+            {
+                get { return false; }
+            }
+
+            public ISaslStep Transition(SaslConversation conversation, byte[] bytesReceivedFromServer)
+            {
+                byte[] bytesToSendToServer;
+                try
                 {
-                    return new InitializeStep(_servicePrincipalName, _authorizationId, context, bytesToSendToServer);
+                    _context.Initialize(_servicePrincipalName, bytesReceivedFromServer, out bytesToSendToServer);
+                }
+                catch (Win32Exception ex)
+                {
+                    throw new MongoAuthenticationException(conversation.ConnectionId, "Unable to initialize security context", ex);
                 }
 
-                return new NegotiateStep(_authorizationId, context, bytesToSendToServer);
+                if (!_context.IsInitialized)
+                {
+                    return new InitializeStep(_servicePrincipalName, _authorizationId, _context, bytesToSendToServer);
+                }
+
+                return new NegotiateStep(_authorizationId, _context, bytesToSendToServer);
             }
         }
 
@@ -316,7 +344,7 @@ namespace MongoDB.Driver.Core.Authentication
                 }
                 catch (Win32Exception ex)
                 {
-                    throw  new MongoAuthenticationException(conversation.ConnectionId, "Unable to initialize security context", ex);
+                    throw new MongoAuthenticationException(conversation.ConnectionId, "Unable to initialize security context", ex);
                 }
 
                 if (!_context.IsInitialized)
@@ -353,18 +381,6 @@ namespace MongoDB.Driver.Core.Authentication
 
             public ISaslStep Transition(SaslConversation conversation, byte[] bytesReceivedFromServer)
             {
-                // Even though RFC says that clients should specifically check this and raise an error
-                // if it isn't true, this breaks on Windows XP, so we are skipping the check for windows
-                // XP, identified as Win32NT 5.1: http://msdn.microsoft.com/en-us/library/windows/desktop/ms724832(v=vs.85).aspx
-                if (Environment.OSVersion.Platform != PlatformID.Win32NT ||
-                    Environment.OSVersion.Version.Major != 5)
-                {
-                    if (bytesReceivedFromServer == null || bytesReceivedFromServer.Length != 32) //RFC specifies this must be 4 octets
-                    {
-                        throw new MongoAuthenticationException(conversation.ConnectionId, message: "Invalid server response.");
-                    }
-                }
-
                 byte[] decryptedBytes;
                 try
                 {

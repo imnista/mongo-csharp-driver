@@ -1,4 +1,4 @@
-﻿/* Copyright 2010-2014 MongoDB Inc.
+/* Copyright 2010-present MongoDB Inc.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -30,18 +30,27 @@ namespace MongoDB.Bson.Serialization
     public class BsonClassMapSerializer<TClass> : SerializerBase<TClass>, IBsonIdProvider, IBsonDocumentSerializer, IBsonPolymorphicSerializer
     {
         // private fields
-        private BsonClassMap<TClass> _classMap;
+        private BsonClassMap _classMap;
 
         // constructors
         /// <summary>
         /// Initializes a new instance of the BsonClassMapSerializer class.
         /// </summary>
         /// <param name="classMap">The class map.</param>
-        public BsonClassMapSerializer(BsonClassMap<TClass> classMap)
+        public BsonClassMapSerializer(BsonClassMap classMap)
         {
             if (classMap == null)
             {
                 throw new ArgumentNullException("classMap");
+            }
+            if (classMap.ClassType != typeof(TClass))
+            {
+                var message = string.Format("Must be a BsonClassMap for the type {0}.", typeof(TClass));
+                throw new ArgumentException(message, "classMap");
+            }
+            if (!classMap.IsFrozen)
+            {
+                throw new ArgumentException("Class map is not frozen.", nameof(classMap));
             }
 
             _classMap = classMap;
@@ -70,7 +79,7 @@ namespace MongoDB.Bson.Serialization
         {
             var bsonReader = context.Reader;
 
-            if (_classMap.ClassType.IsValueType)
+            if (_classMap.ClassType.GetTypeInfo().IsValueType)
             {
                 var message = string.Format("Value class {0} cannot be deserialized.", _classMap.ClassType.FullName);
                 throw new BsonSerializationException(message);
@@ -119,7 +128,9 @@ namespace MongoDB.Bson.Serialization
 
             Dictionary<string, object> values = null;
             var document = default(TClass);
+#if NET452
             ISupportInitialize supportsInitialization = null;
+#endif
             if (_classMap.HasCreatorMaps)
             {
                 // for creator-based deserialization we first gather the values in a dictionary and then call a matching creator
@@ -128,13 +139,15 @@ namespace MongoDB.Bson.Serialization
             else
             {
                 // for mutable classes we deserialize the values directly into the result object
-                document = _classMap.CreateInstance();
+                document = (TClass)_classMap.CreateInstance();
 
+#if NET452
                 supportsInitialization = document as ISupportInitialize;
                 if (supportsInitialization != null)
                 {
                     supportsInitialization.BeginInit();
                 }
+#endif
             }
 
             var discriminatorConvention = _classMap.GetDiscriminatorConvention();
@@ -175,7 +188,14 @@ namespace MongoDB.Bson.Serialization
                     }
                     else
                     {
-                        DeserializeExtraElement(context, document, elementName, memberMap);
+                        if (document != null)
+                        {
+                            DeserializeExtraElementMember(context, document, elementName, memberMap);
+                        }
+                        else
+                        {
+                            DeserializeExtraElementValue(context, values, elementName, memberMap);
+                        }
                     }
                     memberMapBitArray[memberMapIndex >> 5] |= 1U << (memberMapIndex & 31);
                 }
@@ -189,7 +209,15 @@ namespace MongoDB.Bson.Serialization
 
                     if (extraElementsMemberMapIndex >= 0)
                     {
-                        DeserializeExtraElement(context, document, elementName, _classMap.ExtraElementsMemberMap);
+                        var extraElementsMemberMap = _classMap.ExtraElementsMemberMap;
+                        if (document != null)
+                        {
+                            DeserializeExtraElementMember(context, document, elementName, extraElementsMemberMap);
+                        }
+                        else
+                        {
+                            DeserializeExtraElementValue(context, values, elementName, extraElementsMemberMap);
+                        }
                         memberMapBitArray[extraElementsMemberMapIndex >> 5] |= 1U << (extraElementsMemberMapIndex & 31);
                     }
                     else if (_classMap.IgnoreExtraElements)
@@ -227,7 +255,7 @@ namespace MongoDB.Bson.Serialization
 
                         if (memberMap.IsRequired)
                         {
-                            var fieldOrProperty = (memberMap.MemberInfo.MemberType == MemberTypes.Field) ? "field" : "property";
+                            var fieldOrProperty = (memberMap.MemberInfo is FieldInfo) ? "field" : "property";
                             var message = string.Format(
                                 "Required element '{0}' for {1} '{2}' of class {3} is missing.",
                                 memberMap.ElementName, fieldOrProperty, memberMap.MemberName, _classMap.ClassType.FullName);
@@ -258,10 +286,12 @@ namespace MongoDB.Bson.Serialization
 
             if (document != null)
             {
+#if NET452
                 if (supportsInitialization != null)
                 {
                     supportsInitialization.EndInit();
                 }
+#endif
 
                 return document;
             }
@@ -318,7 +348,6 @@ namespace MongoDB.Bson.Serialization
                 {
                     var elementName = memberMap.ElementName;
                     var serializer = memberMap.GetSerializer();
-                    var nominalType = memberMap.MemberType;
                     serializationInfo = new BsonSerializationInfo(elementName, serializer, serializer.ValueType);
                     return true;
                 }
@@ -365,7 +394,8 @@ namespace MongoDB.Bson.Serialization
         public void SetDocumentId(object document, object id)
         {
             var documentType = document.GetType();
-            if (documentType.IsValueType)
+            var documentTypeInfo = documentType.GetTypeInfo();
+            if (documentTypeInfo.IsValueType)
             {
                 var message = string.Format("SetDocumentId cannot be used with value type {0}.", documentType.FullName);
                 throw new BsonSerializationException(message);
@@ -403,12 +433,13 @@ namespace MongoDB.Bson.Serialization
             var creatorMap = ChooseBestCreator(values);
             var document = creatorMap.CreateInstance(values); // removes values consumed
 
+#if NET452
             var supportsInitialization = document as ISupportInitialize;
             if (supportsInitialization != null)
             {
                 supportsInitialization.BeginInit();
             }
-
+#endif
             // process any left over values that weren't passed to the creator
             foreach (var keyValuePair in values)
             {
@@ -422,15 +453,17 @@ namespace MongoDB.Bson.Serialization
                 }
             }
 
+#if NET452
             if (supportsInitialization != null)
             {
                 supportsInitialization.EndInit();
             }
+#endif
 
             return (TClass)document;
         }
 
-        private void DeserializeExtraElement(
+        private void DeserializeExtraElementMember(
             BsonDeserializationContext context,
             object obj,
             string elementName,
@@ -446,6 +479,7 @@ namespace MongoDB.Bson.Serialization
                     extraElements = new BsonDocument();
                     extraElementsMemberMap.Setter(obj, extraElements);
                 }
+
                 var bsonValue = BsonValueSerializer.Instance.Deserialize(context);
                 extraElements[elementName] = bsonValue;
             }
@@ -464,6 +498,58 @@ namespace MongoDB.Bson.Serialization
                     }
                     extraElementsMemberMap.Setter(obj, extraElements);
                 }
+
+                var bsonValue = BsonValueSerializer.Instance.Deserialize(context);
+                extraElements[elementName] = BsonTypeMapper.MapToDotNetValue(bsonValue);
+            }
+        }
+
+        private void DeserializeExtraElementValue(
+            BsonDeserializationContext context,
+            Dictionary<string, object> values,
+            string elementName,
+            BsonMemberMap extraElementsMemberMap)
+        {
+            var bsonReader = context.Reader;
+
+            if (extraElementsMemberMap.MemberType == typeof(BsonDocument))
+            {
+                BsonDocument extraElements;
+                object obj;
+                if (values.TryGetValue(extraElementsMemberMap.ElementName, out obj))
+                {
+                    extraElements = (BsonDocument)obj;
+                }
+                else
+                {
+                    extraElements = new BsonDocument();
+                    values.Add(extraElementsMemberMap.ElementName, extraElements);
+                }
+
+                var bsonValue = BsonValueSerializer.Instance.Deserialize(context);
+                extraElements[elementName] = bsonValue;
+            }
+            else
+            {
+                IDictionary<string, object> extraElements;
+                object obj;
+                if (values.TryGetValue(extraElementsMemberMap.ElementName, out obj))
+                {
+                    extraElements = (IDictionary<string, object>)obj;
+                }
+                else
+                {
+                    if (extraElementsMemberMap.MemberType == typeof(IDictionary<string, object>))
+                    {
+                        extraElements = new Dictionary<string, object>();
+                    }
+                    else
+                    {
+                        extraElements = (IDictionary<string, object>)Activator.CreateInstance(extraElementsMemberMap.MemberType);
+                    }
+                    values.Add(extraElementsMemberMap.ElementName, extraElements);
+                }
+
                 var bsonValue = BsonValueSerializer.Instance.Deserialize(context);
                 extraElements[elementName] = BsonTypeMapper.MapToDotNetValue(bsonValue);
             }
@@ -481,7 +567,7 @@ namespace MongoDB.Bson.Serialization
             {
                 var message = string.Format(
                     "An error occurred while deserializing the {0} {1} of class {2}: {3}", // terminating period provided by nested message
-                    memberMap.MemberName, (memberMap.MemberInfo.MemberType == MemberTypes.Field) ? "field" : "property", memberMap.ClassMap.ClassType.FullName, ex.Message);
+                    memberMap.MemberName, (memberMap.MemberInfo is FieldInfo) ? "field" : "property", memberMap.ClassMap.ClassType.FullName, ex.Message);
                 throw new FormatException(message, ex);
             }
         }

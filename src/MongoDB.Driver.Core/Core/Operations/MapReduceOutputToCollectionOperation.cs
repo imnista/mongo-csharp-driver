@@ -1,4 +1,4 @@
-﻿/* Copyright 2013-2014 MongoDB Inc.
+/* Copyright 2013-present MongoDB Inc.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -19,6 +19,7 @@ using System.Threading.Tasks;
 using MongoDB.Bson;
 using MongoDB.Bson.Serialization.Serializers;
 using MongoDB.Driver.Core.Bindings;
+using MongoDB.Driver.Core.Connections;
 using MongoDB.Driver.Core.Misc;
 using MongoDB.Driver.Core.WireProtocol.Messages.Encoders;
 
@@ -30,10 +31,12 @@ namespace MongoDB.Driver.Core.Operations
     public class MapReduceOutputToCollectionOperation : MapReduceOperationBase, IWriteOperation<BsonDocument>
     {
         // fields
+        private bool? _bypassDocumentValidation;
         private bool? _nonAtomicOutput;
         private readonly CollectionNamespace _outputCollectionNamespace;
         private MapReduceOutputMode _outputMode;
         private bool? _shardedOutput;
+        private WriteConcern _writeConcern;
 
         // constructors
         /// <summary>
@@ -56,11 +59,23 @@ namespace MongoDB.Driver.Core.Operations
                 reduceFunction,
                 messageEncoderSettings)
         {
-            _outputCollectionNamespace = Ensure.IsNotNull(outputCollectionNamespace, "outputCollectionNamespace");
+            _outputCollectionNamespace = Ensure.IsNotNull(outputCollectionNamespace, nameof(outputCollectionNamespace));
             _outputMode = MapReduceOutputMode.Replace;
         }
 
         // properties
+        /// <summary>
+        /// Gets or sets a value indicating whether to bypass document validation.
+        /// </summary>
+        /// <value>
+        /// A value indicating whether to bypass document validation.
+        /// </value>
+        public bool? BypassDocumentValidation
+        {
+            get { return _bypassDocumentValidation; }
+            set { _bypassDocumentValidation = value; }
+        }
+
         /// <summary>
         /// Gets or sets a value indicating whether the server should not lock the database for merge and reduce output modes.
         /// </summary>
@@ -108,7 +123,37 @@ namespace MongoDB.Driver.Core.Operations
             set { _shardedOutput = value; }
         }
 
+        /// <summary>
+        /// Gets or sets the write concern.
+        /// </summary>
+        /// <value>
+        /// The write concern.
+        /// </value>
+        public WriteConcern WriteConcern
+        {
+            get { return _writeConcern; }
+            set { _writeConcern = value; }
+        }
+
         // methods
+        /// <inheritdoc/>
+        protected internal override BsonDocument CreateCommand(ICoreSessionHandle session, ConnectionDescription connectionDescription)
+        {
+            var command = base.CreateCommand(session, connectionDescription);
+
+            var serverVersion = connectionDescription.ServerVersion;
+            if (_bypassDocumentValidation.HasValue && Feature.BypassDocumentValidation.IsSupported(serverVersion))
+            {
+                command.Add("bypassDocumentValidation", _bypassDocumentValidation.Value);
+            }
+            var writeConcern = WriteConcernHelper.GetWriteConcernForCommandThatWrites(session, _writeConcern, serverVersion);
+            if (writeConcern != null)
+            {
+                command.Add("writeConcern", writeConcern.ToBsonDocument());
+            }
+            return command;
+        }
+
         /// <inheritdoc/>
         protected override BsonDocument CreateOutputOptions()
         {
@@ -123,12 +168,37 @@ namespace MongoDB.Driver.Core.Operations
         }
 
         /// <inheritdoc/>
-        public Task<BsonDocument> ExecuteAsync(IWriteBinding binding, CancellationToken cancellationToken)
+        public BsonDocument Execute(IWriteBinding binding, CancellationToken cancellationToken)
         {
-            Ensure.IsNotNull(binding, "binding");
-            var command = CreateCommand();
-            var operation = new WriteCommandOperation<BsonDocument>(CollectionNamespace.DatabaseNamespace, command, BsonDocumentSerializer.Instance, MessageEncoderSettings);
-            return operation.ExecuteAsync(binding, cancellationToken);
+            Ensure.IsNotNull(binding, nameof(binding));
+
+            using (var channelSource = binding.GetWriteChannelSource(cancellationToken))
+            using (var channel = channelSource.GetChannel(cancellationToken))
+            using (var channelBinding = new ChannelReadWriteBinding(channelSource.Server, channel, binding.Session.Fork()))
+            {
+                var operation = CreateOperation(channelBinding.Session, channel.ConnectionDescription);
+                return operation.Execute(channelBinding, cancellationToken);
+            }
+        }
+
+        /// <inheritdoc/>
+        public async Task<BsonDocument> ExecuteAsync(IWriteBinding binding, CancellationToken cancellationToken)
+        {
+            Ensure.IsNotNull(binding, nameof(binding));
+
+            using (var channelSource = await binding.GetWriteChannelSourceAsync(cancellationToken).ConfigureAwait(false))
+            using (var channel = await channelSource.GetChannelAsync(cancellationToken).ConfigureAwait(false))
+            using (var channelBinding = new ChannelReadWriteBinding(channelSource.Server, channel, binding.Session.Fork()))
+            {
+                var operation = CreateOperation(channelBinding.Session, channel.ConnectionDescription);
+                return await operation.ExecuteAsync(channelBinding, cancellationToken).ConfigureAwait(false);
+            }
+        }
+
+        private WriteCommandOperation<BsonDocument> CreateOperation(ICoreSessionHandle session, ConnectionDescription connectionDescription)
+        {
+            var command = CreateCommand(session, connectionDescription);
+            return new WriteCommandOperation<BsonDocument>(CollectionNamespace.DatabaseNamespace, command, BsonDocumentSerializer.Instance, MessageEncoderSettings);
         }
     }
 }

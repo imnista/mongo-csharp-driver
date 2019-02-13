@@ -1,4 +1,4 @@
-﻿/* Copyright 2013-2014 MongoDB Inc.
+/* Copyright 2013-present MongoDB Inc.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -14,35 +14,35 @@
 */
 
 using System;
+#if NET452
 using System.Runtime.Serialization;
+#endif
 using MongoDB.Bson;
-using MongoDB.Bson.Serialization;
 using MongoDB.Driver.Core.Connections;
-using MongoDB.Driver.Core.Misc;
 
 namespace MongoDB.Driver
 {
     /// <summary>
     /// Represents a MongoDB not primary exception.
     /// </summary>
+#if NET452
     [Serializable]
-    public class MongoNotPrimaryException : MongoServerException
+#endif
+    public class MongoNotPrimaryException : MongoCommandException
     {
-        // fields
-        private readonly BsonDocument _result;
-
         // constructors
         /// <summary>
         /// Initializes a new instance of the <see cref="MongoNotPrimaryException"/> class.
         /// </summary>
         /// <param name="connectionId">The connection identifier.</param>
+        /// <param name="command">The command.</param>
         /// <param name="result">The result.</param>
-        public MongoNotPrimaryException(ConnectionId connectionId, BsonDocument result)
-            : base(connectionId, "Server returned not master error.")
+        public MongoNotPrimaryException(ConnectionId connectionId, BsonDocument command, BsonDocument result)
+            : base(connectionId, "Server returned not master error.", command, result)
         {
-            _result = Ensure.IsNotNull(result, "result");
         }
 
+#if NET452
         /// <summary>
         /// Initializes a new instance of the <see cref="MongoNotPrimaryException"/> class.
         /// </summary>
@@ -51,27 +51,7 @@ namespace MongoDB.Driver
         protected MongoNotPrimaryException(SerializationInfo info, StreamingContext context)
             : base(info, context)
         {
-            _result = (BsonDocument)info.GetValue("_result", typeof(BsonDocument));
         }
-
-        // properties
-        /// <summary>
-        /// Gets the result from the server.
-        /// </summary>
-        /// <value>
-        /// The result from the server.
-        /// </value>
-        public BsonDocument Result
-        {
-            get { return _result; }
-        }
-
-        // methods
-        /// <inheritdoc/>
-        public override void GetObjectData(SerializationInfo info, StreamingContext context)
-        {
-            base.GetObjectData(info, context);
-            info.AddValue("_result", _result);
-        }
+#endif
     }
 }

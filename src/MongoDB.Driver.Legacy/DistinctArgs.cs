@@ -1,4 +1,4 @@
-﻿/* Copyright 2010-2014 MongoDB Inc.
+/* Copyright 2010-present MongoDB Inc.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -15,6 +15,7 @@
 
 using System;
 using MongoDB.Bson.Serialization;
+using MongoDB.Driver.Core.Misc;
 
 namespace MongoDB.Driver
 {
@@ -24,12 +25,22 @@ namespace MongoDB.Driver
     public class DistinctArgs
     {
         // private fields
+        private Collation _collation;
         private string _key;
         private TimeSpan? _maxTime;
         private IMongoQuery _query;
         private IBsonSerializer _valueSerializer;
 
         // public properties
+        /// <summary>
+        /// Gets or sets the collation.
+        /// </summary>
+        public Collation Collation
+        {
+            get { return _collation; }
+            set { _collation = value; }
+        }
+
         /// <summary>
         /// Gets or sets the key.
         /// </summary>
@@ -45,7 +56,7 @@ namespace MongoDB.Driver
         public TimeSpan? MaxTime
         {
             get { return _maxTime; }
-            set { _maxTime = value; }
+            set { _maxTime = Ensure.IsNullOrInfiniteOrGreaterThanOrEqualToZero(value, nameof(value)); }
         }
 
         /// <summary>

@@ -1,4 +1,4 @@
-﻿/* Copyright 2013-2014 MongoDB Inc.
+/* Copyright 2013-present MongoDB Inc.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -87,6 +87,7 @@ namespace MongoDB.Driver.Core.Misc
             }
         }
 
+#if NET452
         /// <summary>
         /// Gets the object data required to serialize an end point.
         /// </summary>
@@ -119,6 +120,7 @@ namespace MongoDB.Driver.Core.Misc
 
             return null;
         }
+#endif
 
         /// <summary>
         /// Compares two sequences of end points.
@@ -138,7 +140,7 @@ namespace MongoDB.Driver.Core.Misc
         /// <returns>An end point.</returns>
         public static EndPoint Parse(string value)
         {
-            Ensure.IsNotNull(value, "value");
+            Ensure.IsNotNull(value, nameof(value));
 
             EndPoint endPoint;
             if (!TryParse(value, out endPoint))
@@ -176,6 +178,11 @@ namespace MongoDB.Driver.Core.Misc
         /// <returns>True if the string representation was parsed successfully.</returns>
         public static bool TryParse(string value, out EndPoint result)
         {
+            return TryParse(value, 27017, out result);
+        }
+        
+        internal static bool TryParse(string value, int defaultPort, out EndPoint result)
+        {
             result = null;
 
             if (value != null)
@@ -186,7 +193,16 @@ namespace MongoDB.Driver.Core.Misc
                 {
                     var addressString = match.Groups["address"].Value;
                     var portString = match.Groups["port"].Value;
-                    var port = portString.Length == 0 ? 27017 : int.Parse(portString, CultureInfo.InvariantCulture);
+                    var port = defaultPort;
+                    if (portString.Length != 0 && !int.TryParse(portString, out port))
+                    {
+                        return false;
+                    }
+
+                    if (!IsValidPort(port))
+                    {
+                        return false;
+                    }
 
                     IPAddress address;
                     if (IPAddress.TryParse(addressString, out address))
@@ -203,7 +219,16 @@ namespace MongoDB.Driver.Core.Misc
                 {
                     var host = match.Groups["host"].Value;
                     var portString = match.Groups["port"].Value;
-                    var port = portString.Length == 0 ? 27017 : int.Parse(portString, CultureInfo.InvariantCulture);
+                    var port = defaultPort;
+                    if (portString.Length != 0 && !int.TryParse(portString, out port))
+                    {
+                        return false;
+                    }
+
+                    if (!IsValidPort(port))
+                    {
+                        return false;
+                    }
 
                     IPAddress address;
                     if (IPAddress.TryParse(host, out address))
@@ -225,6 +250,11 @@ namespace MongoDB.Driver.Core.Misc
             }
 
             return false;
+        }
+
+        private static bool IsValidPort(int port)
+        {
+            return port > 0 && port <= ushort.MaxValue;
         }
 
         // nested classes

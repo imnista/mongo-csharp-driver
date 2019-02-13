@@ -1,4 +1,4 @@
-﻿/* Copyright 2010-2014 MongoDB Inc.
+/* Copyright 2010-present MongoDB Inc.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -16,14 +16,19 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
 using MongoDB.Bson;
+using MongoDB.Driver.Core.Configuration;
 
 namespace MongoDB.Driver
 {
     /// <summary>
     /// Represents an immutable URL style connection string. See also MongoUrlBuilder.
     /// </summary>
+#if NET452
     [Serializable]
+#endif
     public class MongoUrl : IEquatable<MongoUrl>
     {
         // private static fields
@@ -31,6 +36,7 @@ namespace MongoDB.Driver
         private static Dictionary<string, MongoUrl> __cache = new Dictionary<string, MongoUrl>();
 
         // private fields
+        private readonly string _applicationName;
         private readonly string _authenticationMechanism;
         private readonly IEnumerable<KeyValuePair<string, string>> _authenticationMechanismProperties;
         private readonly string _authenticationSource;
@@ -39,6 +45,8 @@ namespace MongoDB.Driver
         private readonly string _databaseName;
         private readonly bool? _fsync;
         private readonly GuidRepresentation _guidRepresentation;
+        private readonly TimeSpan _heartbeatInterval;
+        private readonly TimeSpan _heartbeatTimeout;
         private readonly bool _ipv6;
         private readonly bool? _journal;
         private readonly TimeSpan _maxConnectionIdleTime;
@@ -46,10 +54,14 @@ namespace MongoDB.Driver
         private readonly int _maxConnectionPoolSize;
         private readonly int _minConnectionPoolSize;
         private readonly string _password;
+        private readonly ReadConcernLevel? _readConcernLevel;
         private readonly ReadPreference _readPreference;
         private readonly string _replicaSetName;
+        private readonly bool? _retryWrites;
         private readonly TimeSpan _localThreshold;
+        private readonly ConnectionStringScheme _scheme;
         private readonly IEnumerable<MongoServerAddress> _servers;
+        private readonly TimeSpan _serverSelectionTimeout;
         private readonly TimeSpan _socketTimeout;
         private readonly string _username;
         private readonly bool _useSsl;
@@ -60,6 +72,7 @@ namespace MongoDB.Driver
         private readonly TimeSpan _waitQueueTimeout;
         private readonly TimeSpan? _wTimeout;
         private readonly string _url;
+        private readonly string _originalUrl;
 
         // constructors
         /// <summary>
@@ -68,7 +81,10 @@ namespace MongoDB.Driver
         /// <param name="url">The URL containing the settings.</param>
         public MongoUrl(string url)
         {
+            _originalUrl = url;
+
             var builder = new MongoUrlBuilder(url); // parses url
+            _applicationName = builder.ApplicationName;
             _authenticationMechanism = builder.AuthenticationMechanism;
             _authenticationMechanismProperties = builder.AuthenticationMechanismProperties;
             _authenticationSource = builder.AuthenticationSource;
@@ -77,6 +93,8 @@ namespace MongoDB.Driver
             _databaseName = builder.DatabaseName;
             _fsync = builder.FSync;
             _guidRepresentation = builder.GuidRepresentation;
+            _heartbeatInterval = builder.HeartbeatInterval;
+            _heartbeatTimeout = builder.HeartbeatTimeout;
             _ipv6 = builder.IPv6;
             _journal = builder.Journal;
             _localThreshold = builder.LocalThreshold;
@@ -85,9 +103,13 @@ namespace MongoDB.Driver
             _maxConnectionPoolSize = builder.MaxConnectionPoolSize;
             _minConnectionPoolSize = builder.MinConnectionPoolSize;
             _password = builder.Password;
+            _readConcernLevel = builder.ReadConcernLevel;
             _readPreference = builder.ReadPreference;
             _replicaSetName = builder.ReplicaSetName;
+            _retryWrites = builder.RetryWrites;
+            _scheme = builder.Scheme;
             _servers = builder.Servers;
+            _serverSelectionTimeout = builder.ServerSelectionTimeout;
             _socketTimeout = builder.SocketTimeout;
             _username = builder.Username;
             _useSsl = builder.UseSsl;
@@ -101,6 +123,14 @@ namespace MongoDB.Driver
         }
 
         // public properties
+        /// <summary>
+        /// Gets the application name.
+        /// </summary>
+        public string ApplicationName
+        {
+            get { return _applicationName; }
+        }
+
         /// <summary>
         /// Gets the authentication mechanism.
         /// </summary>
@@ -184,6 +214,37 @@ namespace MongoDB.Driver
         }
 
         /// <summary>
+        /// Gets a value indicating whether this instance has authentication settings.
+        /// </summary>
+        public bool HasAuthenticationSettings
+        {
+            get
+            {
+                return
+                    _username != null ||
+                    _password != null ||
+                    _authenticationMechanism != null ||
+                    _authenticationSource != null;
+            }              
+        }
+
+        /// <summary>
+        /// Gets the heartbeat interval.
+        /// </summary>
+        public TimeSpan HeartbeatInterval
+        {
+            get { return _heartbeatInterval; }
+        }
+
+        /// <summary>
+        /// Gets the heartbeat timeout.
+        /// </summary>
+        public TimeSpan HeartbeatTimeout
+        {
+            get { return _heartbeatTimeout; }
+        }
+
+        /// <summary>
         /// Gets a value indicating whether to use IPv6.
         /// </summary>
         public bool IPv6
@@ -248,6 +309,14 @@ namespace MongoDB.Driver
         }
 
         /// <summary>
+        /// Gets the read concern level.
+        /// </summary>
+        public ReadConcernLevel? ReadConcernLevel
+        {
+            get { return _readConcernLevel; }
+        }
+
+        /// <summary>
         /// Gets the read preference.
         /// </summary>
         public ReadPreference ReadPreference
@@ -264,6 +333,22 @@ namespace MongoDB.Driver
         }
 
         /// <summary>
+        /// Gets whether writes will be retried.
+        /// </summary>
+        public bool? RetryWrites
+        {
+            get { return _retryWrites; }
+        }
+
+        /// <summary>
+        /// Gets the scheme.
+        /// </summary>
+        public ConnectionStringScheme Scheme
+        {
+            get { return _scheme; }
+        }
+
+        /// <summary>
         /// Gets the address of the server (see also Servers if using more than one address).
         /// </summary>
         public MongoServerAddress Server
@@ -277,6 +362,14 @@ namespace MongoDB.Driver
         public IEnumerable<MongoServerAddress> Servers
         {
             get { return _servers; }
+        }
+
+        /// <summary>
+        /// Gets the server selection timeout.
+        /// </summary>
+        public TimeSpan ServerSelectionTimeout
+        {
+            get { return _serverSelectionTimeout; }
         }
 
         /// <summary>
@@ -447,6 +540,26 @@ namespace MongoDB.Driver
         }
 
         /// <summary>
+        /// Gets the credential.
+        /// </summary>
+        /// <returns>The credential (or null if the URL has not authentication settings).</returns>
+        public MongoCredential GetCredential()
+        {
+            if (HasAuthenticationSettings)
+            {
+                return MongoCredential.FromComponents(
+                    _authenticationMechanism,
+                    _authenticationSource ?? _databaseName,
+                    _username,
+                    _password);
+            }
+            else
+            {
+                return null;
+            }
+        }
+
+        /// <summary>
         /// Gets the hash code.
         /// </summary>
         /// <returns>The hash code.</returns>
@@ -468,6 +581,45 @@ namespace MongoDB.Driver
             }
 
             return new WriteConcern(_w, _wTimeout, _fsync, _journal);
+        }
+
+        /// <summary>
+        /// Resolves a connection string. If the connection string indicates more information is available
+        /// in the DNS system, it will acquire that information as well.
+        /// </summary>
+        /// <returns>A resolved MongoURL.</returns>
+        public MongoUrl Resolve()
+        {
+            if (_scheme == ConnectionStringScheme.MongoDB)
+            {
+                return this;
+            }
+
+            var connectionString = new ConnectionString(_originalUrl);
+
+            var resolved = connectionString.Resolve();
+
+            return new MongoUrl(resolved.ToString());
+        }
+
+        /// <summary>
+        /// Resolves a connection string. If the connection string indicates more information is available
+        /// in the DNS system, it will acquire that information as well.
+        /// </summary>
+        /// <param name="cancellationToken">The cancellation token.</param>
+        /// <returns>A resolved MongoURL.</returns>
+        public async Task<MongoUrl> ResolveAsync(CancellationToken cancellationToken = default(CancellationToken))
+        {
+            if (_scheme == ConnectionStringScheme.MongoDB)
+            {
+                return this;
+            }
+
+            var connectionString = new ConnectionString(_originalUrl);
+
+            var resolved = await connectionString.ResolveAsync(cancellationToken).ConfigureAwait(false);
+
+            return new MongoUrl(resolved.ToString());
         }
 
         /// <summary>

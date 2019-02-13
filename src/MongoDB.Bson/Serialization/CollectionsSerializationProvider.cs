@@ -1,4 +1,4 @@
-﻿/* Copyright 2010-2014 MongoDB Inc.
+﻿/* Copyright 2010-present MongoDB Inc.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -18,6 +18,9 @@ using System.Collections;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Dynamic;
+using System.Linq;
+using System.Reflection;
+using System.Runtime.InteropServices;
 using MongoDB.Bson.Serialization.Serializers;
 
 namespace MongoDB.Bson.Serialization
@@ -43,21 +46,20 @@ namespace MongoDB.Bson.Serialization
             };
         }
 
-        /// <summary>
-        /// Gets a serializer for a type.
-        /// </summary>
-        /// <param name="type">The type.</param>
-        /// <returns>
-        /// A serializer.
-        /// </returns>
-        /// <exception cref="BsonSerializationException"></exception>
-        public override IBsonSerializer GetSerializer(Type type)
+        private static bool IsOrIsChildOf(Type type, Type parent)
+        {
+            return type == parent || (type != null) && (type != typeof(object) && IsOrIsChildOf(type.GetTypeInfo().BaseType, parent));
+        }
+
+        /// <inheritdoc/>
+        public override IBsonSerializer GetSerializer(Type type, IBsonSerializerRegistry serializerRegistry)
         {
             if (type == null)
             {
                 throw new ArgumentNullException("type");
             }
-            if (type.IsGenericType && type.ContainsGenericParameters)
+            var typeInfo = type.GetTypeInfo();
+            if (typeInfo.IsGenericType && typeInfo.ContainsGenericParameters)
             {
                 var message = string.Format("Generic type {0} has unassigned type parameters.", BsonUtils.GetFriendlyTypeName(type));
                 throw new ArgumentException(message, "type");
@@ -66,15 +68,15 @@ namespace MongoDB.Bson.Serialization
             Type serializerType;
             if (__serializerTypes.TryGetValue(type, out serializerType))
             {
-                return CreateSerializer(serializerType);
+                return CreateSerializer(serializerType, serializerRegistry);
             }
 
-            if (type.IsGenericType && !type.ContainsGenericParameters)
+            if (typeInfo.IsGenericType && !typeInfo.ContainsGenericParameters)
             {
                 Type serializerTypeDefinition;
                 if (__serializerTypes.TryGetValue(type.GetGenericTypeDefinition(), out serializerTypeDefinition))
                 {
-                    return CreateGenericSerializer(serializerTypeDefinition, type.GetGenericArguments());
+                    return CreateGenericSerializer(serializerTypeDefinition, type.GetTypeInfo().GetGenericArguments(), serializerRegistry);
                 }
             }
 
@@ -85,23 +87,29 @@ namespace MongoDB.Bson.Serialization
                 {
                     case 1:
                         var arraySerializerDefinition = typeof(ArraySerializer<>);
-                        return CreateGenericSerializer(arraySerializerDefinition, elementType);
+                        return CreateGenericSerializer(arraySerializerDefinition, new[] { elementType }, serializerRegistry);
                     case 2:
                         var twoDimensionalArraySerializerDefinition = typeof(TwoDimensionalArraySerializer<>);
-                        return CreateGenericSerializer(twoDimensionalArraySerializerDefinition, elementType);
+                        return CreateGenericSerializer(twoDimensionalArraySerializerDefinition, new[] { elementType }, serializerRegistry);
                     case 3:
                         var threeDimensionalArraySerializerDefinition = typeof(ThreeDimensionalArraySerializer<>);
-                        return CreateGenericSerializer(threeDimensionalArraySerializerDefinition, elementType);
+                        return CreateGenericSerializer(threeDimensionalArraySerializerDefinition, new[] { elementType }, serializerRegistry);
                     default:
                         var message = string.Format("No serializer found for array for rank {0}.", type.GetArrayRank());
                         throw new BsonSerializationException(message);
                 }
             }
 
-            return GetCollectionSerializer(type);
+            var readOnlyDictionarySerializer = GetReadOnlyDictionarySerializer(type, serializerRegistry);
+            if (readOnlyDictionarySerializer != null)
+            {
+                return readOnlyDictionarySerializer;
+            }
+
+            return GetCollectionSerializer(type, serializerRegistry);
         }
 
-        private IBsonSerializer GetCollectionSerializer(Type type)
+        private IBsonSerializer GetCollectionSerializer(Type type, IBsonSerializerRegistry serializerRegistry)
         {
             Type implementedGenericDictionaryInterface = null;
             Type implementedGenericEnumerableInterface = null;
@@ -109,15 +117,17 @@ namespace MongoDB.Bson.Serialization
             Type implementedDictionaryInterface = null;
             Type implementedEnumerableInterface = null;
 
-            var implementedInterfaces = new List<Type>(type.GetInterfaces());
-            if (type.IsInterface)
+            var implementedInterfaces = new List<Type>(type.GetTypeInfo().GetInterfaces());
+            var typeInfo = type.GetTypeInfo();
+            if (typeInfo.IsInterface)
             {
                 implementedInterfaces.Add(type);
             }
 
             foreach (var implementedInterface in implementedInterfaces)
             {
-                if (implementedInterface.IsGenericType)
+                var implementedInterfaceTypeInfo = implementedInterface.GetTypeInfo();
+                if (implementedInterfaceTypeInfo.IsGenericType)
                 {
                     var genericInterfaceDefinition = implementedInterface.GetGenericTypeDefinition();
                     if (genericInterfaceDefinition == typeof(IDictionary<,>))
@@ -145,100 +155,157 @@ namespace MongoDB.Bson.Serialization
                     }
                 }
             }
-
+            
             // the order of the tests is important
             if (implementedGenericDictionaryInterface != null)
             {
-                var keyType = implementedGenericDictionaryInterface.GetGenericArguments()[0];
-                var valueType = implementedGenericDictionaryInterface.GetGenericArguments()[1];
-                if (type.IsInterface)
+                var keyType = implementedGenericDictionaryInterface.GetTypeInfo().GetGenericArguments()[0];
+                var valueType = implementedGenericDictionaryInterface.GetTypeInfo().GetGenericArguments()[1];
+                if (typeInfo.IsInterface)
                 {
                     var dictionaryDefinition = typeof(Dictionary<,>);
                     var dictionaryType = dictionaryDefinition.MakeGenericType(keyType, valueType);
                     var serializerDefinition = typeof(ImpliedImplementationInterfaceSerializer<,>);
-                    return CreateGenericSerializer(serializerDefinition, type, dictionaryType);
+                    return CreateGenericSerializer(serializerDefinition, new[] { type, dictionaryType }, serializerRegistry);
                 }
                 else
                 {
                     var serializerDefinition = typeof(DictionaryInterfaceImplementerSerializer<,,>);
-                    return CreateGenericSerializer(serializerDefinition, type, keyType, valueType);
+                    return CreateGenericSerializer(serializerDefinition, new[] { type, keyType, valueType }, serializerRegistry);
                 }
             }
             else if (implementedDictionaryInterface != null)
             {
-                if (type.IsInterface)
+                if (typeInfo.IsInterface)
                 {
                     var dictionaryType = typeof(Hashtable);
                     var serializerDefinition = typeof(ImpliedImplementationInterfaceSerializer<,>);
-                    return CreateGenericSerializer(serializerDefinition, type, dictionaryType);
+                    return CreateGenericSerializer(serializerDefinition, new[] { type, dictionaryType }, serializerRegistry);
                 }
                 else
                 {
                     var serializerDefinition = typeof(DictionaryInterfaceImplementerSerializer<>);
-                    return CreateGenericSerializer(serializerDefinition, type);
+                    return CreateGenericSerializer(serializerDefinition, new[] { type }, serializerRegistry);
                 }
             }
             else if (implementedGenericSetInterface != null)
             {
-                var itemType = implementedGenericSetInterface.GetGenericArguments()[0];
+                var itemType = implementedGenericSetInterface.GetTypeInfo().GetGenericArguments()[0];
 
-                if (type.IsInterface)
+                if (typeInfo.IsInterface)
                 {
                     var hashSetDefinition = typeof(HashSet<>);
                     var hashSetType = hashSetDefinition.MakeGenericType(itemType);
                     var serializerDefinition = typeof(ImpliedImplementationInterfaceSerializer<,>);
-                    return CreateGenericSerializer(serializerDefinition, type, hashSetType);
+                    return CreateGenericSerializer(serializerDefinition, new[] { type, hashSetType }, serializerRegistry);
                 }
                 else
                 {
                     var serializerDefinition = typeof(EnumerableInterfaceImplementerSerializer<,>);
-                    return CreateGenericSerializer(serializerDefinition, type, itemType);
+                    return CreateGenericSerializer(serializerDefinition, new[] { type, itemType }, serializerRegistry);
                 }
             }
             else if (implementedGenericEnumerableInterface != null)
             {
-                var itemType = implementedGenericEnumerableInterface.GetGenericArguments()[0];
+                var itemType = implementedGenericEnumerableInterface.GetTypeInfo().GetGenericArguments()[0];
 
                 var readOnlyCollectionType = typeof(ReadOnlyCollection<>).MakeGenericType(itemType);
                 if (type == readOnlyCollectionType)
                 {
                     var serializerDefinition = typeof(ReadOnlyCollectionSerializer<>);
-                    return CreateGenericSerializer(serializerDefinition, itemType);
+                    return CreateGenericSerializer(serializerDefinition, new[] { itemType }, serializerRegistry);
                 }
-                else if (readOnlyCollectionType.IsAssignableFrom(type))
+                else if (readOnlyCollectionType.GetTypeInfo().IsAssignableFrom(type))
                 {
                     var serializerDefinition = typeof(ReadOnlyCollectionSubclassSerializer<,>);
-                    return CreateGenericSerializer(serializerDefinition, type, itemType);
+                    return CreateGenericSerializer(serializerDefinition, new[] { type, itemType }, serializerRegistry);
                 }
-                else if (type.IsInterface)
+                else if (typeInfo.IsInterface)
                 {
                     var listDefinition = typeof(List<>);
                     var listType = listDefinition.MakeGenericType(itemType);
                     var serializerDefinition = typeof(ImpliedImplementationInterfaceSerializer<,>);
-                    return CreateGenericSerializer(serializerDefinition, type, listType);
+                    return CreateGenericSerializer(serializerDefinition, new[] { type, listType }, serializerRegistry);
                 }
                 else
                 {
                     var serializerDefinition = typeof(EnumerableInterfaceImplementerSerializer<,>);
-                    return CreateGenericSerializer(serializerDefinition, type, itemType);
+                    return CreateGenericSerializer(serializerDefinition, new[] { type, itemType }, serializerRegistry);
                 }
             }
             else if (implementedEnumerableInterface != null)
             {
-                if (type.IsInterface)
+                if (typeInfo.IsInterface)
                 {
                     var listType = typeof(ArrayList);
                     var serializerDefinition = typeof(ImpliedImplementationInterfaceSerializer<,>);
-                    return CreateGenericSerializer(serializerDefinition, type, listType);
+                    return CreateGenericSerializer(serializerDefinition, new[] { type, listType }, serializerRegistry);
                 }
                 else
                 {
                     var serializerDefinition = typeof(EnumerableInterfaceImplementerSerializer<>);
-                    return CreateGenericSerializer(serializerDefinition, type);
+                    return CreateGenericSerializer(serializerDefinition, new[] { type }, serializerRegistry);
                 }
             }
 
             return null;
         }
+
+        private List<Type> GetImplementedInterfaces(Type type)
+        {
+            return type.GetTypeInfo().IsInterface 
+                ? type.GetTypeInfo().GetInterfaces().Concat(new Type[]{type}).ToList()
+                : type.GetTypeInfo().GetInterfaces().ToList();
+        }
+            
+        private IBsonSerializer GetReadOnlyDictionarySerializer(Type type, IBsonSerializerRegistry serializerRegistry)
+        {
+            var typeInfo = type.GetTypeInfo();            
+            if (!typeInfo.IsGenericType 
+                || typeInfo.IsGenericTypeDefinition 
+                || typeInfo.GetGenericArguments().Length != 2)
+            {
+                return null;
+            }
+
+            var keyType = typeInfo.GetGenericArguments()[0];
+            var valueType = typeInfo.GetGenericArguments()[1];
+            var typeIsIReadOnlyDictionary =
+                type == typeof(IReadOnlyDictionary<,>).MakeGenericType(keyType, valueType);
+            var typeIsOrIsChildOfReadOnlyDictionary = 
+                IsOrIsChildOf(type, typeof(ReadOnlyDictionary<,>).MakeGenericType(keyType, valueType));
+
+            var implementedInterfaces = GetImplementedInterfaces(type);
+            var genericImplementedInterfaces = implementedInterfaces.Where(ii => ii.GetTypeInfo().IsGenericType);
+            var genericImplementedInterfaceDefinitions = 
+                genericImplementedInterfaces.Select(i => i.GetGenericTypeDefinition()).ToArray();
+            var implementsGenericReadOnlyDictionaryInterface =
+                genericImplementedInterfaceDefinitions.Contains(typeof(IReadOnlyDictionary<,>));
+            var implementsGenericDictionaryInterface = 
+                genericImplementedInterfaceDefinitions.Contains(typeof(IDictionary<,>));
+
+            if (typeIsIReadOnlyDictionary)
+            {
+                return CreateGenericSerializer(
+                    serializerTypeDefinition: typeof(ImpliedImplementationInterfaceSerializer<,>),
+                    typeArguments: new[] {type, typeof(ReadOnlyDictionary<,>).MakeGenericType(keyType, valueType)},
+                    serializerRegistry: serializerRegistry);
+            }
+                
+            if (typeIsOrIsChildOfReadOnlyDictionary
+                || (!typeInfo.IsInterface
+                    && implementsGenericReadOnlyDictionaryInterface
+                    && !implementsGenericDictionaryInterface))
+            {
+                return CreateGenericSerializer(
+                    serializerTypeDefinition: typeof(ReadOnlyDictionaryInterfaceImplementerSerializer<,,>),
+                    typeArguments: new[] {type, keyType, valueType},
+                    serializerRegistry: serializerRegistry);
+            }
+
+            return null;
+
+        }
+        
     }
 }

@@ -1,4 +1,4 @@
-﻿/* Copyright 2010-2014 MongoDB Inc.
+/* Copyright 2010-present MongoDB Inc.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -13,10 +13,6 @@
 * limitations under the License.
 */
 
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using MongoDB.Driver.Core.Bindings;
@@ -26,14 +22,41 @@ namespace MongoDB.Driver
 {
     internal sealed class OperationExecutor : IOperationExecutor
     {
+        private readonly MongoClient _client;
+
+        public OperationExecutor(MongoClient client)
+        {
+            _client = client;
+        }
+
+        public TResult ExecuteReadOperation<TResult>(IReadBinding binding, IReadOperation<TResult> operation, CancellationToken cancellationToken)
+        {
+            return operation.Execute(binding, cancellationToken);
+        }
+
         public async Task<TResult> ExecuteReadOperationAsync<TResult>(IReadBinding binding, IReadOperation<TResult> operation, CancellationToken cancellationToken)
         {
             return await operation.ExecuteAsync(binding, cancellationToken).ConfigureAwait(false);
         }
 
+        public TResult ExecuteWriteOperation<TResult>(IWriteBinding binding, IWriteOperation<TResult> operation, CancellationToken cancellationToken)
+        {
+            return operation.Execute(binding, cancellationToken);
+        }
+
         public async Task<TResult> ExecuteWriteOperationAsync<TResult>(IWriteBinding binding, IWriteOperation<TResult> operation, CancellationToken cancellationToken)
         {
             return await operation.ExecuteAsync(binding, cancellationToken).ConfigureAwait(false);
+        }
+
+        public IClientSessionHandle StartImplicitSession(CancellationToken cancellationToken)
+        {
+            return _client.StartImplicitSession(cancellationToken);
+        }
+
+        public Task<IClientSessionHandle> StartImplicitSessionAsync(CancellationToken cancellationToken)
+        {
+            return _client.StartImplicitSessionAsync(cancellationToken);
         }
     }
 }

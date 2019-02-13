@@ -1,4 +1,4 @@
-﻿/* Copyright 2010-2014 MongoDB Inc.
+/* Copyright 2010-present MongoDB Inc.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -14,6 +14,7 @@
 */
 
 using System;
+using System.Globalization;
 using System.IO;
 
 namespace MongoDB.Bson.IO
@@ -102,7 +103,7 @@ namespace MongoDB.Bson.IO
         /// <returns>A bookmark.</returns>
         public override BsonReaderBookmark GetBookmark()
         {
-            return new BsonBinaryReaderBookmark(State, CurrentBsonType, CurrentName, _context, (int)_bsonStream.Position);
+            return new BsonBinaryReaderBookmark(State, CurrentBsonType, CurrentName, _context, _bsonStream.Position);
         }
 
         /// <summary>
@@ -147,21 +148,12 @@ namespace MongoDB.Bson.IO
 
             var bytes = _bsonStream.ReadBytes(size);
 
-            var guidRepresentation = GuidRepresentation.Unspecified;
-            if (subType == BsonBinarySubType.UuidLegacy || subType == BsonBinarySubType.UuidStandard)
+            GuidRepresentation guidRepresentation;
+            switch (subType)
             {
-                if (_settings.GuidRepresentation != GuidRepresentation.Unspecified)
-                {
-                    var expectedSubType = (_settings.GuidRepresentation == GuidRepresentation.Standard) ? BsonBinarySubType.UuidStandard : BsonBinarySubType.UuidLegacy;
-                    if (subType != expectedSubType)
-                    {
-                        var message = string.Format(
-                            "The GuidRepresentation for the reader is {0}, which requires the binary sub type to be {1}, not {2}.",
-                            _settings.GuidRepresentation, expectedSubType, subType);
-                        throw new FormatException(message);
-                    }
-                }
-                guidRepresentation = (subType == BsonBinarySubType.UuidStandard) ? GuidRepresentation.Standard : _settings.GuidRepresentation;
+                case BsonBinarySubType.UuidLegacy: guidRepresentation = _settings.GuidRepresentation; break;
+                case BsonBinarySubType.UuidStandard: guidRepresentation = GuidRepresentation.Standard; break;
+                default: guidRepresentation = GuidRepresentation.Unspecified; break;
             }
 
             State = GetNextState();
@@ -200,7 +192,28 @@ namespace MongoDB.Bson.IO
                 ThrowInvalidState("ReadBsonType", BsonReaderState.Type);
             }
 
-            CurrentBsonType = _bsonStream.ReadBsonType();
+            if (_context.ContextType == ContextType.Array)
+            {
+                _context.CurrentArrayIndex++;
+            }
+
+            try
+            {
+
+                CurrentBsonType = _bsonStream.ReadBsonType();
+            }
+            catch (FormatException ex)
+            {
+                if (ex.Message.StartsWith("Detected unknown BSON type"))
+                {
+                    // insert the element name into the error message
+                    var periodIndex = ex.Message.IndexOf('.');
+                    var dottedElementName = GenerateDottedElementName();
+                    var message = ex.Message.Substring(0, periodIndex) + $" for fieldname \"{dottedElementName}\"" + ex.Message.Substring(periodIndex);
+                    throw new FormatException(message);
+                }
+                throw;
+            }
 
             if (CurrentBsonType == BsonType.EndOfDocument)
             {
@@ -253,7 +266,7 @@ namespace MongoDB.Bson.IO
             var subType = _bsonStream.ReadBinarySubType();
             if (subType != BsonBinarySubType.Binary && subType != BsonBinarySubType.OldBinary)
             {
-                var message = string.Format("ReadBytes requires the binary sub type to be Binary, not {2}.", subType);
+                var message = string.Format("ReadBytes requires the binary sub type to be Binary, not {0}.", subType);
                 throw new FormatException(message);
             }
 
@@ -280,6 +293,15 @@ namespace MongoDB.Bson.IO
                 }
             }
             return value;
+        }
+
+        /// <inheritdoc />
+        public override Decimal128 ReadDecimal128()
+        {
+            if (Disposed) { ThrowObjectDisposedException(); }
+            VerifyBsonType(nameof(ReadDecimal128), BsonType.Decimal128);
+            State = GetNextState();
+            return _bsonStream.ReadDecimal128();
         }
 
         /// <summary>
@@ -454,6 +476,11 @@ namespace MongoDB.Bson.IO
 
             CurrentName = nameDecoder.Decode(_bsonStream, _settings.Encoding);
             State = BsonReaderState.Value;
+
+            if (_context.ContextType == ContextType.Document)
+            {
+                _context.CurrentElementName = CurrentName;
+            }
 
             return CurrentName;
         }
@@ -647,7 +674,13 @@ namespace MongoDB.Bson.IO
             }
 
             _bsonStream.SkipCString();
+            CurrentName = null;
             State = BsonReaderState.Value;
+
+            if (_context.ContextType == ContextType.Document)
+            {
+                _context.CurrentElementName = CurrentName;
+            }
         }
 
         /// <summary>
@@ -669,6 +702,7 @@ namespace MongoDB.Bson.IO
                 case BsonType.Boolean: skip = 1; break;
                 case BsonType.DateTime: skip = 8; break;
                 case BsonType.Document: skip = ReadSize() - 4; break;
+                case BsonType.Decimal128: skip = 16; break;
                 case BsonType.Double: skip = 8; break;
                 case BsonType.Int32: skip = 4; break;
                 case BsonType.Int64: skip = 8; break;
@@ -710,6 +744,53 @@ namespace MongoDB.Bson.IO
         }
 
         // private methods
+        private string GenerateDottedElementName()
+        {
+            string elementName;
+            if (_context.ContextType == ContextType.Document)
+            {
+                try
+                {
+                    elementName = _bsonStream.ReadCString(Utf8Encodings.Lenient);
+                }
+                catch
+                {
+                    elementName = "?"; // ignore exception
+                }
+            }
+            else if (_context.ContextType == ContextType.Array)
+            {
+                elementName = _context.CurrentArrayIndex.ToString(NumberFormatInfo.InvariantInfo);
+            }
+            else
+            {
+                elementName = "?";
+            }
+
+            return GenerateDottedElementName(_context.ParentContext, elementName);
+        }
+
+        private string GenerateDottedElementName(BsonBinaryReaderContext context, string elementName)
+        {
+            if (context.ContextType == ContextType.Document)
+            {
+                return GenerateDottedElementName(context.ParentContext, (context.CurrentElementName ?? "?") + "." + elementName);
+            }
+            else if (context.ContextType == ContextType.Array)
+            {
+                var indexElementName = context.CurrentArrayIndex.ToString(NumberFormatInfo.InvariantInfo);
+                return GenerateDottedElementName(context.ParentContext, indexElementName + "." + elementName);
+            }
+            else if (context.ParentContext != null)
+            {
+                return GenerateDottedElementName(context.ParentContext, "?." + elementName);
+            }
+            else
+            {
+                return elementName;
+            }
+        }
+
         private BsonReaderState GetNextState()
         {
             switch (_context.ContextType)

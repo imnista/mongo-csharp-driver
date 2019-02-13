@@ -1,4 +1,4 @@
-﻿/* Copyright 2010-2014 MongoDB Inc.
+/* Copyright 2010-present MongoDB Inc.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -22,6 +22,7 @@ namespace MongoDB.Driver
     internal interface IInheritableMongoClientSettings
     {
         GuidRepresentation GuidRepresentation { get; }
+        ReadConcern ReadConcern { get; }
         UTF8Encoding ReadEncoding { get; }
         ReadPreference ReadPreference { get; }
         WriteConcern WriteConcern { get; }

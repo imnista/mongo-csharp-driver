@@ -1,4 +1,4 @@
-﻿/* Copyright 2010-2014 MongoDB Inc.
+/* Copyright 2010-present MongoDB Inc.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -26,7 +26,6 @@ using MongoDB.Driver.Core.Misc;
 using MongoDB.Driver.Core.Operations;
 using MongoDB.Driver.Core.Servers;
 using MongoDB.Driver.Core.WireProtocol.Messages.Encoders;
-using MongoDB.Driver.Sync;
 
 namespace MongoDB.Driver
 {
@@ -80,7 +79,6 @@ namespace MongoDB.Driver
                 switch (serverDescription.Type)
                 {
                     case ServerType.ReplicaSetArbiter:
-                    case ServerType.ReplicaSetPassive:
                     case ServerType.ReplicaSetPrimary:
                     case ServerType.ReplicaSetSecondary:
                     case ServerType.ReplicaSetOther:
@@ -133,12 +131,12 @@ namespace MongoDB.Driver
         /// <summary>
         /// Gets a value indicating whether this server instance is a passive instance.
         /// </summary>
+        [Obsolete("Passives are treated the same as secondaries.")]
         public bool IsPassive
         {
             get
             {
-                var serverDescription = GetServerDescription();
-                return serverDescription.Type == ServerType.ReplicaSetPassive;
+                return false;
             }
         }
 
@@ -262,7 +260,11 @@ namespace MongoDB.Driver
         /// <returns>The IP end point of this server instance.</returns>
         public IPEndPoint GetIPEndPoint()
         {
+#if NETSTANDARD1_5 || NETSTANDARD1_6
+            var ipAddresses = Dns.GetHostAddressesAsync(_address.Host).GetAwaiter().GetResult();
+#else
             var ipAddresses = Dns.GetHostAddresses(_address.Host);
+#endif
             var ipAddress = ipAddresses.FirstOrDefault(a => a.AddressFamily == (_settings.IPv6 ? AddressFamily.InterNetworkV6 : AddressFamily.InterNetwork));
             return new IPEndPoint(ipAddress, _address.Port);
         }
@@ -292,10 +294,9 @@ namespace MongoDB.Driver
             var operation = new PingOperation(messageEncoderSettings);
 
             var server = GetServer();
-            using (var channelSource = new ChannelSourceHandle(new ServerChannelSource(server)))
-            using (var channelSourceBinding = new ChannelSourceReadWriteBinding(channelSource, ReadPreference.PrimaryPreferred))
+            using (var binding = new SingleServerReadBinding(server, ReadPreference.PrimaryPreferred, NoCoreSession.NewHandle()))
             {
-                operation.Execute(channelSourceBinding, CancellationToken.None);
+                operation.Execute(binding, CancellationToken.None);
             }
         }
 
@@ -331,7 +332,7 @@ namespace MongoDB.Driver
 
                 // supported in 2.6.0 and newer but not on mongos
                 case FeatureId.ParallelScanCommand:
-                    return BuildInfo.Version >= new Version(2, 6, 0) && InstanceType != MongoServerInstanceType.ShardRouter;
+                    return BuildInfo.Version >= new Version(2, 6, 0) && BuildInfo.Version < new Version(4, 1, 0) && InstanceType != MongoServerInstanceType.ShardRouter;
 
                 default:
                     return false;

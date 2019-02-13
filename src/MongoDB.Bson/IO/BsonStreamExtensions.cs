@@ -1,4 +1,4 @@
-﻿/* Copyright 2010-2014 MongoDB Inc.
+﻿/* Copyright 2010-present MongoDB Inc.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -14,11 +14,7 @@
 */
 
 using System;
-using System.Collections.Generic;
 using System.IO;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
 
 namespace MongoDB.Bson.IO
 {
@@ -56,10 +52,16 @@ namespace MongoDB.Bson.IO
                 throw new ArgumentOutOfRangeException("startPosition");
             }
 
+            var size = stream.Position - startPosition;
+            if (size > int.MaxValue)
+            {
+                var message = string.Format("Size {0} is larger than {1} (Int32.MaxValue).", size, int.MaxValue);
+                throw new FormatException(message);
+            }
+
             var endPosition = stream.Position;
-            var size = (int)(endPosition - startPosition);
             stream.Position = startPosition;
-            stream.WriteInt32(size);
+            stream.WriteInt32((int)size);
             stream.Position = endPosition;
         }
 
@@ -122,7 +124,7 @@ namespace MongoDB.Bson.IO
             }
             if (!__validBsonTypes[b])
             {
-                string message = string.Format("Invalid BsonType: {0}.", b);
+                var message = string.Format("Detected unknown BSON type \"\\x{0:x2}\". Are you using the latest driver version?", b);
                 throw new FormatException(message);
             }
             return (BsonType)b;
@@ -305,7 +307,7 @@ namespace MongoDB.Bson.IO
                 var segment = slice.AccessBackingBytes(position);
                 var partialCount = Math.Min(count, segment.Count);
                 stream.WriteBytes(segment.Array, segment.Offset, partialCount);
-                position += count;
+                position += partialCount;
                 count -= partialCount;
             }
         }

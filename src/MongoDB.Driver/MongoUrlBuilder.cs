@@ -1,4 +1,4 @@
-﻿/* Copyright 2010-2014 MongoDB Inc.
+/* Copyright 2010-present MongoDB Inc.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -19,22 +19,26 @@ using System.Linq;
 using System.Net;
 using System.Text;
 using System.Text.RegularExpressions;
+using System.Threading;
 using MongoDB.Bson;
 using MongoDB.Bson.IO;
 using MongoDB.Driver.Core.Clusters;
 using MongoDB.Driver.Core.Configuration;
 using MongoDB.Driver.Core.Misc;
+using MongoDB.Shared;
 
 namespace MongoDB.Driver
 {
     /// <summary>
-    /// Represents URL style connection strings. This is the recommended connection string style, but see also
-    /// MongoConnectionStringBuilder if you wish to use .NET style connection strings.
+    /// Represents URL-style connection strings.
     /// </summary>
+#if NET452
     [Serializable]
+#endif
     public class MongoUrlBuilder
     {
         // private fields
+        private string _applicationName;
         private string _authenticationMechanism;
         private Dictionary<string, string> _authenticationMechanismProperties;
         private string _authenticationSource;
@@ -43,6 +47,8 @@ namespace MongoDB.Driver
         private string _databaseName;
         private bool? _fsync;
         private GuidRepresentation _guidRepresentation;
+        private TimeSpan _heartbeatInterval;
+        private TimeSpan _heartbeatTimeout;
         private bool _ipv6;
         private bool? _journal;
         private TimeSpan _localThreshold;
@@ -51,9 +57,13 @@ namespace MongoDB.Driver
         private int _maxConnectionPoolSize;
         private int _minConnectionPoolSize;
         private string _password;
+        private ReadConcernLevel? _readConcernLevel;
         private ReadPreference _readPreference;
         private string _replicaSetName;
+        private bool? _retryWrites;
+        private ConnectionStringScheme _scheme;
         private IEnumerable<MongoServerAddress> _servers;
+        private TimeSpan _serverSelectionTimeout;
         private TimeSpan _socketTimeout;
         private string _username;
         private bool _useSsl;
@@ -70,14 +80,17 @@ namespace MongoDB.Driver
         /// </summary>
         public MongoUrlBuilder()
         {
+            _applicationName = null;
             _authenticationMechanism = MongoDefaults.AuthenticationMechanism;
-            _authenticationMechanismProperties = new Dictionary<string, string>(StringComparer.InvariantCultureIgnoreCase);
+            _authenticationMechanismProperties = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             _authenticationSource = null;
             _connectionMode = ConnectionMode.Automatic;
             _connectTimeout = MongoDefaults.ConnectTimeout;
             _databaseName = null;
             _fsync = null;
             _guidRepresentation = MongoDefaults.GuidRepresentation;
+            _heartbeatInterval = ServerSettings.DefaultHeartbeatInterval;
+            _heartbeatTimeout = ServerSettings.DefaultHeartbeatTimeout;
             _ipv6 = false;
             _journal = null;
             _maxConnectionIdleTime = MongoDefaults.MaxConnectionIdleTime;
@@ -85,10 +98,13 @@ namespace MongoDB.Driver
             _maxConnectionPoolSize = MongoDefaults.MaxConnectionPoolSize;
             _minConnectionPoolSize = MongoDefaults.MinConnectionPoolSize;
             _password = null;
+            _readConcernLevel = null;
             _readPreference = null;
             _replicaSetName = null;
+            _retryWrites = null;
             _localThreshold = MongoDefaults.LocalThreshold;
             _servers = new[] { new MongoServerAddress("localhost", 27017) };
+            _serverSelectionTimeout = MongoDefaults.ServerSelectionTimeout;
             _socketTimeout = MongoDefaults.SocketTimeout;
             _username = null;
             _useSsl = false;
@@ -112,6 +128,15 @@ namespace MongoDB.Driver
 
         // public properties
         /// <summary>
+        /// Gets or sets the application name.
+        /// </summary>
+        public string ApplicationName
+        {
+            get { return _applicationName; }
+            set { _applicationName = ApplicationNameHelper.EnsureApplicationNameIsValid(value, nameof(value)); }
+        }
+
+        /// <summary>
         /// Gets or sets the authentication mechanism.
         /// </summary>
         public string AuthenticationMechanism
@@ -133,7 +158,7 @@ namespace MongoDB.Driver
                     throw new ArgumentNullException("value");
                 }
 
-                _authenticationMechanismProperties = value.ToDictionary(x => x.Key, x => x.Value, StringComparer.InvariantCultureIgnoreCase);
+                _authenticationMechanismProperties = value.ToDictionary(x => x.Key, x => x.Value, StringComparer.OrdinalIgnoreCase);
             }
         }
 
@@ -217,6 +242,38 @@ namespace MongoDB.Driver
         {
             get { return _guidRepresentation; }
             set { _guidRepresentation = value; }
+        }
+
+        /// <summary>
+        /// Gets or sets the heartbeat interval.
+        /// </summary>
+        public TimeSpan HeartbeatInterval
+        {
+            get { return _heartbeatInterval; }
+            set
+            {
+                if (value < TimeSpan.Zero)
+                {
+                    throw new ArgumentOutOfRangeException("value", "HeartbeatInterval must be greater than or equal to zero.");
+                }
+                _heartbeatInterval = value;
+            }
+        }
+
+        /// <summary>
+        /// Gets or sets the heartbeat timeout.
+        /// </summary>
+        public TimeSpan HeartbeatTimeout
+        {
+            get { return _heartbeatTimeout; }
+            set
+            {
+                if (value < TimeSpan.Zero && value != Timeout.InfiniteTimeSpan)
+                {
+                    throw new ArgumentOutOfRangeException("value", "HeartbeatTimeout must be greater than or equal to zero.");
+                }
+                _heartbeatTimeout = value;
+            }
         }
 
         /// <summary>
@@ -330,6 +387,15 @@ namespace MongoDB.Driver
         }
 
         /// <summary>
+        /// Gets or sets the read concern level.
+        /// </summary>
+        public ReadConcernLevel? ReadConcernLevel
+        {
+            get { return _readConcernLevel; }
+            set { _readConcernLevel = value; }
+        }
+
+        /// <summary>
         /// Gets or sets the read preference.
         /// </summary>
         public ReadPreference ReadPreference
@@ -358,6 +424,24 @@ namespace MongoDB.Driver
         }
 
         /// <summary>
+        /// Gets or sets whether to retry writes.
+        /// </summary>
+        public bool? RetryWrites
+        {
+            get { return _retryWrites; }
+            set { _retryWrites = value; }
+        }
+
+        /// <summary>
+        /// The scheme used to connect with mongodb.
+        /// </summary>
+        public ConnectionStringScheme Scheme
+        {
+            get { return _scheme; }
+            set { _scheme = value; }
+        }
+
+        /// <summary>
         /// Gets or sets the address of the server (see also Servers if using more than one address).
         /// </summary>
         public MongoServerAddress Server
@@ -373,6 +457,22 @@ namespace MongoDB.Driver
         {
             get { return _servers; }
             set { _servers = value; }
+        }
+
+        /// <summary>
+        /// Gets or sets the server selection timeout.
+        /// </summary>
+        public TimeSpan ServerSelectionTimeout
+        {
+            get { return _serverSelectionTimeout; }
+            set
+            {
+                if (value < TimeSpan.Zero)
+                {
+                    throw new ArgumentOutOfRangeException("value", "ServerSelectionTimeout must be greater than or equal to zero.");
+                }
+                _serverSelectionTimeout = value;
+            }
         }
 
         /// <summary>
@@ -519,8 +619,9 @@ namespace MongoDB.Driver
         public void Parse(string url)
         {
             var connectionString = new ConnectionString(url);
+            _applicationName = connectionString.ApplicationName;
             _authenticationMechanism = connectionString.AuthMechanism;
-            _authenticationMechanismProperties = connectionString.AuthMechanismProperties.ToDictionary(x => x.Key, x => x.Value, StringComparer.InvariantCultureIgnoreCase);
+            _authenticationMechanismProperties = connectionString.AuthMechanismProperties.ToDictionary(x => x.Key, x => x.Value, StringComparer.OrdinalIgnoreCase);
             _authenticationSource = connectionString.AuthSource;
             switch (connectionString.Connect)
             {
@@ -544,6 +645,8 @@ namespace MongoDB.Driver
             _databaseName = connectionString.DatabaseName;
             _fsync = connectionString.FSync;
             _guidRepresentation = connectionString.UuidRepresentation.GetValueOrDefault(MongoDefaults.GuidRepresentation);
+            _heartbeatInterval = connectionString.HeartbeatInterval ?? ServerSettings.DefaultHeartbeatInterval;
+            _heartbeatTimeout = connectionString.HeartbeatTimeout ?? ServerSettings.DefaultHeartbeatTimeout;
             _ipv6 = connectionString.Ipv6.GetValueOrDefault(false);
             _journal = connectionString.Journal;
             _maxConnectionIdleTime = connectionString.MaxIdleTime.GetValueOrDefault(MongoDefaults.MaxConnectionIdleTime);
@@ -551,21 +654,19 @@ namespace MongoDB.Driver
             _maxConnectionPoolSize = connectionString.MaxPoolSize.GetValueOrDefault(MongoDefaults.MaxConnectionPoolSize);
             _minConnectionPoolSize = connectionString.MinPoolSize.GetValueOrDefault(MongoDefaults.MinConnectionPoolSize);
             _password = connectionString.Password;
-            if (connectionString.ReadPreference != null)
+            _readConcernLevel = connectionString.ReadConcernLevel;
+            if (connectionString.ReadPreference.HasValue || connectionString.ReadPreferenceTags != null || connectionString.MaxStaleness.HasValue)
             {
-                _readPreference = new ReadPreference(connectionString.ReadPreference.Value);
-            }
-            if (connectionString.ReadPreferenceTags != null)
-            {
-                if (_readPreference == null)
+                if (!connectionString.ReadPreference.HasValue)
                 {
-                    throw new MongoConfigurationException("ReadPreferenceMode is required when using tag sets.");
+                    throw new MongoConfigurationException("readPreference mode is required when using tag sets or max staleness.");
                 }
-                _readPreference = _readPreference.With(tagSets: connectionString.ReadPreferenceTags);
+                _readPreference = new ReadPreference(connectionString.ReadPreference.Value, connectionString.ReadPreferenceTags, connectionString.MaxStaleness);
             }
-
             _replicaSetName = connectionString.ReplicaSet;
+            _retryWrites = connectionString.RetryWrites;
             _localThreshold = connectionString.LocalThreshold.GetValueOrDefault(MongoDefaults.LocalThreshold);
+            _scheme = connectionString.Scheme;
             _servers = connectionString.Hosts.Select(endPoint =>
             {
                 DnsEndPoint dnsEndPoint;
@@ -576,13 +677,19 @@ namespace MongoDB.Driver
                 }
                 else if ((ipEndPoint = endPoint as IPEndPoint) != null)
                 {
-                    return new MongoServerAddress(ipEndPoint.Address.ToString(), ipEndPoint.Port);
+                    var address = ipEndPoint.Address.ToString();
+                    if (ipEndPoint.AddressFamily == System.Net.Sockets.AddressFamily.InterNetworkV6)
+                    {
+                        address = "[" + address + "]";
+                    }
+                    return new MongoServerAddress(address, ipEndPoint.Port);
                 }
                 else
                 {
                     throw new NotSupportedException("Only DnsEndPoint and IPEndPoints are supported in the connection string.");
                 }
             });
+            _serverSelectionTimeout = connectionString.ServerSelectionTimeout.GetValueOrDefault(MongoDefaults.ServerSelectionTimeout);
             _socketTimeout = connectionString.SocketTimeout.GetValueOrDefault(MongoDefaults.SocketTimeout);
             _username = connectionString.Username;
             _useSsl = connectionString.Ssl.GetValueOrDefault(false);
@@ -618,7 +725,14 @@ namespace MongoDB.Driver
         public override string ToString()
         {
             StringBuilder url = new StringBuilder();
-            url.Append("mongodb://");
+            if (_scheme == ConnectionStringScheme.MongoDB)
+            {
+                url.Append("mongodb://");
+            }
+            else
+            {
+                url.Append("mongodb+srv://");
+            }
             if (!string.IsNullOrEmpty(_username))
             {
                 url.Append(Uri.EscapeDataString(_username));
@@ -639,7 +753,7 @@ namespace MongoDB.Driver
                 foreach (MongoServerAddress server in _servers)
                 {
                     if (!firstServer) { url.Append(","); }
-                    if (server.Port == 27017)
+                    if (server.Port == 27017 || _scheme == ConnectionStringScheme.MongoDBPlusSrv)
                     {
                         url.Append(server.Host);
                     }
@@ -671,13 +785,27 @@ namespace MongoDB.Driver
             {
                 query.AppendFormat("authSource={0};", _authenticationSource);
             }
+            if (_applicationName != null)
+            {
+                query.AppendFormat("appname={0};", _applicationName);
+            }
             if (_ipv6)
             {
                 query.AppendFormat("ipv6=true;");
             }
-            if (_useSsl)
+            if (_scheme == ConnectionStringScheme.MongoDBPlusSrv)
             {
-                query.AppendFormat("ssl=true;");
+                if (!_useSsl)
+                {
+                    query.AppendFormat("ssl=false;");
+                }
+            }
+            else
+            {
+                if (_useSsl)
+                {
+                    query.AppendFormat("ssl=true;");
+                }
             }
             if (!_verifySslCertificate)
             {
@@ -691,6 +819,10 @@ namespace MongoDB.Driver
             {
                 query.AppendFormat("replicaSet={0};", _replicaSetName);
             }
+            if (_readConcernLevel != null)
+            {
+                query.AppendFormat("readConcernLevel={0};", MongoUtils.ToCamelCase(_readConcernLevel.Value.ToString()));
+            }
             if (_readPreference != null)
             {
                 query.AppendFormat("readPreference={0};", MongoUtils.ToCamelCase(_readPreference.ReadPreferenceMode.ToString()));
@@ -700,6 +832,10 @@ namespace MongoDB.Driver
                     {
                         query.AppendFormat("readPreferenceTags={0};", string.Join(",", tagSet.Tags.Select(t => string.Format("{0}:{1}", t.Name, t.Value)).ToArray()));
                     }
+                }
+                if (_readPreference.MaxStaleness.HasValue)
+                {
+                    query.AppendFormat("maxStaleness={0};", FormatTimeSpan(_readPreference.MaxStaleness.Value));
                 }
             }
             if (_fsync != null)
@@ -722,6 +858,14 @@ namespace MongoDB.Driver
             {
                 query.AppendFormat("connectTimeout={0};", FormatTimeSpan(_connectTimeout));
             }
+            if (_heartbeatInterval != ServerSettings.DefaultHeartbeatInterval)
+            {
+                query.AppendFormat("heartbeatInterval={0};", FormatTimeSpan(_heartbeatInterval));
+            }
+            if (_heartbeatTimeout != ServerSettings.DefaultHeartbeatTimeout)
+            {
+                query.AppendFormat("heartbeatTimeout={0};", FormatTimeSpan(_heartbeatTimeout));
+            }
             if (_maxConnectionIdleTime != MongoDefaults.MaxConnectionIdleTime)
             {
                 query.AppendFormat("maxIdleTime={0};", FormatTimeSpan(_maxConnectionIdleTime));
@@ -742,6 +886,10 @@ namespace MongoDB.Driver
             {
                 query.AppendFormat("localThreshold={0};", FormatTimeSpan(_localThreshold));
             }
+            if (_serverSelectionTimeout != MongoDefaults.ServerSelectionTimeout)
+            {
+                query.AppendFormat("serverSelectionTimeout={0};", FormatTimeSpan(_serverSelectionTimeout));
+            }
             if (_socketTimeout != MongoDefaults.SocketTimeout)
             {
                 query.AppendFormat("socketTimeout={0};", FormatTimeSpan(_socketTimeout));
@@ -761,6 +909,10 @@ namespace MongoDB.Driver
             if (_guidRepresentation != MongoDefaults.GuidRepresentation)
             {
                 query.AppendFormat("uuidRepresentation={0};", (_guidRepresentation == GuidRepresentation.CSharpLegacy) ? "csharpLegacy" : MongoUtils.ToCamelCase(_guidRepresentation.ToString()));
+            }
+            if (_retryWrites.GetValueOrDefault(false))
+            {
+                query.AppendFormat("retryWrites=true;");
             }
             if (query.Length != 0)
             {

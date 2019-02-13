@@ -1,4 +1,4 @@
-﻿/* Copyright 2010-2014 MongoDB Inc.
+/* Copyright 2010-present MongoDB Inc.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -196,6 +196,17 @@ namespace MongoDB.Driver
     public sealed class ProjectionDefinitionBuilder<TSource>
     {
         /// <summary>
+        /// Creates a client side projection that is implemented solely by using a different serializer.
+        /// </summary>
+        /// <typeparam name="TProjection">The type of the projection.</typeparam>
+        /// <param name="projectionSerializer">The projection serializer.</param>
+        /// <returns>A client side deserialization projection.</returns>
+        public ProjectionDefinition<TSource, TProjection> As<TProjection>(IBsonSerializer<TProjection> projectionSerializer = null)
+        {
+            return new ClientSideDeserializationProjectionDefinition<TSource, TProjection>(projectionSerializer);
+        }
+
+        /// <summary>
         /// Combines the specified projections.
         /// </summary>
         /// <param name="projections">The projections.</param>
@@ -370,7 +381,7 @@ namespace MongoDB.Driver
 
         public CombinedProjectionDefinition(IEnumerable<ProjectionDefinition<TSource>> projections)
         {
-            _projections = Ensure.IsNotNull(projections, "projections").ToList();
+            _projections = Ensure.IsNotNull(projections, nameof(projections)).ToList();
         }
 
         public override BsonDocument Render(IBsonSerializer<TSource> sourceSerializer, IBsonSerializerRegistry serializerRegistry)
@@ -400,7 +411,7 @@ namespace MongoDB.Driver
 
         public ElementMatchProjectionDefinition(FieldDefinition<TSource> field, FilterDefinition<TItem> filter)
         {
-            _field = Ensure.IsNotNull(field, "field");
+            _field = Ensure.IsNotNull(field, nameof(field));
             _filter = filter;
         }
 
@@ -437,7 +448,7 @@ namespace MongoDB.Driver
 
         public PositionalOperatorProjectionDefinition(FieldDefinition<TSource> field)
         {
-            _field = Ensure.IsNotNull(field, "field");
+            _field = Ensure.IsNotNull(field, nameof(field));
         }
 
         public override BsonDocument Render(IBsonSerializer<TSource> sourceSerializer, IBsonSerializerRegistry serializerRegistry)
@@ -454,8 +465,8 @@ namespace MongoDB.Driver
 
         public SingleFieldProjectionDefinition(FieldDefinition<TSource> field, BsonValue value)
         {
-            _field = Ensure.IsNotNull(field, "field");
-            _value = Ensure.IsNotNull(value, "value");
+            _field = Ensure.IsNotNull(field, nameof(field));
+            _value = Ensure.IsNotNull(value, nameof(value));
         }
 
         public override BsonDocument Render(IBsonSerializer<TSource> sourceSerializer, IBsonSerializerRegistry serializerRegistry)

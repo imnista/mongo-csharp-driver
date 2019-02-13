@@ -1,4 +1,4 @@
-﻿/* Copyright 2010-2014 MongoDB Inc.
+﻿/* Copyright 2010-present MongoDB Inc.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -18,8 +18,6 @@ using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
-using MongoDB.Bson.IO;
-using MongoDB.Bson.Serialization;
 using MongoDB.Shared;
 
 namespace MongoDB.Bson
@@ -27,11 +25,13 @@ namespace MongoDB.Bson
     /// <summary>
     /// Represents a BSON array.
     /// </summary>
+#if NET452
     [Serializable]
+#endif
     public class BsonArray : BsonValue, IComparable<BsonArray>, IEquatable<BsonArray>, IList<BsonValue>
     {
         // private fields
-        private List<BsonValue> _values;
+        private readonly List<BsonValue> _values;
 
         // constructors
         /// <summary>
@@ -46,7 +46,9 @@ namespace MongoDB.Bson
         /// Initializes a new instance of the BsonArray class.
         /// </summary>
         /// <param name="values">A list of values to add to the array.</param>
+        [System.Diagnostics.CodeAnalysis.SuppressMessage("Microsoft.Usage", "CA2214:DoNotCallOverridableMethodsInConstructors")]
         public BsonArray(IEnumerable<bool> values)
+
             : this(0)
         {
             AddRange(values);
@@ -56,6 +58,7 @@ namespace MongoDB.Bson
         /// Initializes a new instance of the BsonArray class.
         /// </summary>
         /// <param name="values">A list of values to add to the array.</param>
+        [System.Diagnostics.CodeAnalysis.SuppressMessage("Microsoft.Usage", "CA2214:DoNotCallOverridableMethodsInConstructors")]
         public BsonArray(IEnumerable<BsonValue> values)
             : this(0)
         {
@@ -66,6 +69,7 @@ namespace MongoDB.Bson
         /// Initializes a new instance of the BsonArray class.
         /// </summary>
         /// <param name="values">A list of values to add to the array.</param>
+        [System.Diagnostics.CodeAnalysis.SuppressMessage("Microsoft.Usage", "CA2214:DoNotCallOverridableMethodsInConstructors")]
         public BsonArray(IEnumerable<DateTime> values)
             : this(0)
         {
@@ -76,6 +80,7 @@ namespace MongoDB.Bson
         /// Initializes a new instance of the BsonArray class.
         /// </summary>
         /// <param name="values">A list of values to add to the array.</param>
+        [System.Diagnostics.CodeAnalysis.SuppressMessage("Microsoft.Usage", "CA2214:DoNotCallOverridableMethodsInConstructors")]
         public BsonArray(IEnumerable<double> values)
             : this(0)
         {
@@ -86,6 +91,7 @@ namespace MongoDB.Bson
         /// Initializes a new instance of the BsonArray class.
         /// </summary>
         /// <param name="values">A list of values to add to the array.</param>
+        [System.Diagnostics.CodeAnalysis.SuppressMessage("Microsoft.Usage", "CA2214:DoNotCallOverridableMethodsInConstructors")]
         public BsonArray(IEnumerable<int> values)
             : this(0)
         {
@@ -96,6 +102,7 @@ namespace MongoDB.Bson
         /// Initializes a new instance of the BsonArray class.
         /// </summary>
         /// <param name="values">A list of values to add to the array.</param>
+        [System.Diagnostics.CodeAnalysis.SuppressMessage("Microsoft.Usage", "CA2214:DoNotCallOverridableMethodsInConstructors")]
         public BsonArray(IEnumerable<long> values)
             : this(0)
         {
@@ -106,6 +113,7 @@ namespace MongoDB.Bson
         /// Initializes a new instance of the BsonArray class.
         /// </summary>
         /// <param name="values">A list of values to add to the array.</param>
+        [System.Diagnostics.CodeAnalysis.SuppressMessage("Microsoft.Usage", "CA2214:DoNotCallOverridableMethodsInConstructors")]
         public BsonArray(IEnumerable<ObjectId> values)
             : this(0)
         {
@@ -116,6 +124,7 @@ namespace MongoDB.Bson
         /// Initializes a new instance of the BsonArray class.
         /// </summary>
         /// <param name="values">A list of values to add to the array.</param>
+        [System.Diagnostics.CodeAnalysis.SuppressMessage("Microsoft.Usage", "CA2214:DoNotCallOverridableMethodsInConstructors")]
         public BsonArray(IEnumerable<string> values)
             : this(0)
         {
@@ -126,6 +135,7 @@ namespace MongoDB.Bson
         /// Initializes a new instance of the BsonArray class.
         /// </summary>
         /// <param name="values">A list of values to add to the array.</param>
+        [System.Diagnostics.CodeAnalysis.SuppressMessage("Microsoft.Usage", "CA2214:DoNotCallOverridableMethodsInConstructors")]
         public BsonArray(IEnumerable values)
             : this(0)
         {
@@ -224,7 +234,8 @@ namespace MongoDB.Bson
         public override BsonValue this[int index]
         {
             get { return _values[index]; }
-            set {
+            set
+            {
                 if (value == null)
                 {
                     throw new ArgumentNullException("value");
@@ -341,7 +352,7 @@ namespace MongoDB.Bson
 
             foreach (var value in values)
             {
-                Add(new BsonDouble(value));
+                Add((BsonDouble)value);
             }
 
             return this;
@@ -361,7 +372,7 @@ namespace MongoDB.Bson
 
             foreach (var value in values)
             {
-                Add(new BsonInt32(value));
+                Add((BsonInt32)value);
             }
 
             return this;
@@ -381,7 +392,7 @@ namespace MongoDB.Bson
 
             foreach (var value in values)
             {
-                Add(new BsonInt64(value));
+                Add((BsonInt64)value);
             }
 
             return this;
@@ -421,7 +432,7 @@ namespace MongoDB.Bson
 
             foreach (var value in values)
             {
-                _values.Add((value == null) ? (BsonValue)BsonNull.Value : new BsonString(value));
+                _values.Add((value == null) ? (BsonValue)BsonNull.Value : (BsonString)value);
             }
 
             return this;

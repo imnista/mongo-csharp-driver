@@ -1,4 +1,4 @@
-﻿/* Copyright 2013-2014 MongoDB Inc.
+/* Copyright 2013-present MongoDB Inc.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -14,24 +14,43 @@
 */
 
 using System;
-using System.Collections.Generic;
-using System.Linq;
+#if NET452
 using System.Runtime.Serialization;
-using System.Text;
-using System.Threading.Tasks;
+#endif
 using MongoDB.Bson;
-using MongoDB.Bson.Serialization;
 using MongoDB.Driver.Core.Connections;
-using MongoDB.Driver.Core.Misc;
 
 namespace MongoDB.Driver
 {
     /// <summary>
     /// Represents a MongoDB command exception.
     /// </summary>
+#if NET452
     [Serializable]
+#endif
     public class MongoCommandException : MongoServerException
     {
+        #region static
+        private static void AddErrorLabelsFromCommandResult(MongoCommandException exception, BsonDocument result)
+        {
+            // note: make a best effort to extract the error labels from the result, but never throw an exception
+            if (result != null)
+            {
+                BsonValue errorLabels;
+                if (result.TryGetValue("errorLabels", out errorLabels) && errorLabels.IsBsonArray)
+                {
+                    foreach (var errorLabel in errorLabels.AsBsonArray)
+                    {
+                        if (errorLabel.IsString)
+                        {
+                            exception.AddErrorLabel(errorLabel.AsString);
+                        }
+                    }
+                }
+            }
+        }
+        #endregion
+
         // fields
         private readonly BsonDocument _command;
         private readonly BsonDocument _result;
@@ -58,10 +77,13 @@ namespace MongoDB.Driver
         public MongoCommandException(ConnectionId connectionId, string message, BsonDocument command, BsonDocument result)
             : base(connectionId, message)
         {
-            _command = command;
+            _command = command; // can be null
             _result = result; // can be null
+
+            AddErrorLabelsFromCommandResult(this, result);
         }
 
+#if NET452
         /// <summary>
         /// Initializes a new instance of the <see cref="MongoCommandException"/> class.
         /// </summary>
@@ -73,6 +95,7 @@ namespace MongoDB.Driver
             _command = (BsonDocument)info.GetValue("_command", typeof(BsonDocument));
             _result = (BsonDocument)info.GetValue("_result", typeof(BsonDocument));
         }
+#endif
 
         // properties
         /// <summary>
@@ -84,6 +107,17 @@ namespace MongoDB.Driver
         public int Code
         {
             get { return _result.GetValue("code", -1).ToInt32(); }
+        }
+
+        /// <summary>
+        /// Gets the name of the error code.
+        /// </summary>
+        /// <value>
+        /// The name of the error code.
+        /// </value>
+        public string CodeName
+        {
+            get { return _result.GetValue("codeName", null)?.AsString; }
         }
 
         /// <summary>
@@ -120,6 +154,7 @@ namespace MongoDB.Driver
         }
 
         // methods
+#if NET452
         /// <inheritdoc/>
         public override void GetObjectData(SerializationInfo info, StreamingContext context)
         {
@@ -127,5 +162,6 @@ namespace MongoDB.Driver
             info.AddValue("_command", _command);
             info.AddValue("_result", _result);
         }
+#endif
     }
 }

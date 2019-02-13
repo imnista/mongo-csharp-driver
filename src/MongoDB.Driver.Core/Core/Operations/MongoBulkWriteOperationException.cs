@@ -1,4 +1,4 @@
-﻿/* Copyright 2010-2014 MongoDB Inc.
+/* Copyright 2010-present MongoDB Inc.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -17,7 +17,10 @@ using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Linq;
+#if NET452
 using System.Runtime.Serialization;
+#endif
+using System.Text;
 using MongoDB.Driver.Core.Connections;
 
 namespace MongoDB.Driver.Core.Operations
@@ -25,7 +28,9 @@ namespace MongoDB.Driver.Core.Operations
     /// <summary>
     /// Represents a bulk write operation exception.
     /// </summary>
+#if NET452
     [Serializable]
+#endif
     public class MongoBulkWriteOperationException : MongoServerException
     {
         // fields
@@ -49,7 +54,7 @@ namespace MongoDB.Driver.Core.Operations
             IReadOnlyList<BulkWriteOperationError> writeErrors,
             BulkWriteConcernError writeConcernError,
             IReadOnlyList<WriteRequest> unprocessedRequests)
-            : base(connectionId, "A bulk write operation resulted in one or more errors.")
+            : base(connectionId, FormatMessage(writeErrors, writeConcernError))
         {
             _result = result;
             _writeErrors = writeErrors;
@@ -57,6 +62,7 @@ namespace MongoDB.Driver.Core.Operations
             _unprocessedRequests = unprocessedRequests;
         }
 
+#if NET452
         /// <summary>
         /// Initializes a new instance of the <see cref="MongoBulkWriteOperationException" /> class.
         /// </summary>
@@ -70,6 +76,7 @@ namespace MongoDB.Driver.Core.Operations
             _writeConcernError = (BulkWriteConcernError)info.GetValue("_writeConcernError", typeof(BulkWriteConcernError));
             _writeErrors = (IReadOnlyList<BulkWriteOperationError>)info.GetValue("_writeErrors", typeof(IReadOnlyList<BulkWriteOperationError>));
         }
+#endif
 
         // properties
         /// <summary>
@@ -115,6 +122,7 @@ namespace MongoDB.Driver.Core.Operations
         }
 
         // methods
+#if NET452
         /// <inheritdoc/>
         public override void GetObjectData(SerializationInfo info, StreamingContext context)
         {
@@ -123,6 +131,25 @@ namespace MongoDB.Driver.Core.Operations
             info.AddValue("_unprocessedRequests", _unprocessedRequests);
             info.AddValue("_writeConcernError", _writeConcernError);
             info.AddValue("_writeErrors", _writeErrors);
+        }
+#endif
+
+        private static string FormatMessage(IReadOnlyList<BulkWriteOperationError> writeErrors, BulkWriteConcernError writeConcernError)
+        {
+            var sb = new StringBuilder("A bulk write operation resulted in one or more errors.");
+            if (writeErrors != null)
+            {
+                foreach (var writeError in writeErrors)
+                {
+                    sb.AppendLine().Append("  " + writeError.Message);
+                }
+            }
+            if (writeConcernError != null)
+            {
+                sb.AppendLine().Append("  " + writeConcernError.Message);
+            }
+
+            return sb.ToString();
         }
     }
 }

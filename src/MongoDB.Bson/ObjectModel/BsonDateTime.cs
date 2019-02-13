@@ -1,4 +1,4 @@
-﻿/* Copyright 2010-2014 MongoDB Inc.
+﻿/* Copyright 2010-present MongoDB Inc.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -21,11 +21,13 @@ namespace MongoDB.Bson
     /// <summary>
     /// Represents a BSON DateTime value.
     /// </summary>
+#if NET452
     [Serializable]
+#endif
     public class BsonDateTime : BsonValue, IComparable<BsonDateTime>, IEquatable<BsonDateTime>
     {
         // private fields
-        private long _millisecondsSinceEpoch;
+        private readonly long _millisecondsSinceEpoch;
 
         // constructors
         /// <summary>
@@ -264,6 +266,19 @@ namespace MongoDB.Bson
             {
                 return JsonConvert.ToString(_millisecondsSinceEpoch);
             }
+        }
+
+        // protected methods
+        /// <inheritdoc/>
+        protected override TypeCode IConvertibleGetTypeCodeImplementation()
+        {
+            return TypeCode.DateTime;
+        }
+
+        /// <inheritdoc/>
+        protected override DateTime IConvertibleToDateTimeImplementation(IFormatProvider provider)
+        {
+            return ToUniversalTime();
         }
     }
 }

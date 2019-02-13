@@ -1,4 +1,4 @@
-﻿/* Copyright 2010-2014 MongoDB Inc.
+/* Copyright 2010-present MongoDB Inc.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -112,7 +112,7 @@ namespace MongoDB.Bson.IO
             }
             set
             {
-                if (value < 0)
+                if (value < 0 || value > int.MaxValue)
                 {
                     throw new ArgumentOutOfRangeException("value");
                 }
@@ -296,7 +296,13 @@ namespace MongoDB.Bson.IO
 
         private void PrepareToWrite(int count)
         {
-            _buffer.EnsureCapacity(_position + count);
+            var minimumCapacity = (long)_position + (long)count;
+            if (minimumCapacity > int.MaxValue)
+            {
+                throw new IOException("Stream was too long.");
+            }
+
+            _buffer.EnsureCapacity((int)minimumCapacity);
             _buffer.Length = _buffer.Capacity;
             if (_length < _position)
             {
@@ -332,7 +338,8 @@ namespace MongoDB.Bson.IO
 
         private void ThrowIfEndOfStream(int count)
         {
-            if (_position + count > _length)
+            var minimumLength = (long)_position + (long)count;
+            if (_length < minimumLength)
             {
                 if (_position < _length)
                 {
@@ -376,6 +383,17 @@ namespace MongoDB.Bson.IO
                 var cstring = ReadBytes(length + 1); // advance over the null byte
                 return new ArraySegment<byte>(cstring, 0, length); // without the null byte
             }
+        }
+
+        /// <inheritdoc/>
+        public override Decimal128 ReadDecimal128()
+        {
+            ThrowIfDisposed();
+            ThrowIfEndOfStream(16);
+
+            var lowBits = (ulong)ReadInt64();
+            var highBits = (ulong)ReadInt64();
+            return Decimal128.FromIEEEBits(highBits, lowBits);
         }
 
         /// <inheritdoc/>
@@ -524,20 +542,15 @@ namespace MongoDB.Bson.IO
                 throw new ArgumentNullException("value");
             }
             ThrowIfDisposed();
-            
-            var maxLength = Utf8Encodings.Strict.GetMaxByteCount(value.Length) + 1;
+
+            var maxLength = CStringUtf8Encoding.GetMaxByteCount(value.Length) + 1;
             PrepareToWrite(maxLength);
 
             int actualLength;
             var segment = _buffer.AccessBackingBytes(_position);
             if (segment.Count >= maxLength)
             {
-                actualLength = Utf8Encodings.Strict.GetBytes(value, 0, value.Length, segment.Array, segment.Offset);
-                if (Array.IndexOf<byte>(segment.Array, 0, segment.Offset, actualLength) != -1)
-                {
-                    throw new ArgumentException("UTF8 representation of a CString cannot contain null bytes.", "value");
-                }
-
+                actualLength = CStringUtf8Encoding.GetBytes(value, segment.Array, segment.Offset, Utf8Encodings.Strict);
                 segment.Array[segment.Offset + actualLength] = 0;
             }
             else
@@ -546,17 +559,16 @@ namespace MongoDB.Bson.IO
                 if (maxLength <= _tempUtf8.Length)
                 {
                     bytes = _tempUtf8;
-                    actualLength = Utf8Encodings.Strict.GetBytes(value, 0, value.Length, bytes, 0);
+                    actualLength = CStringUtf8Encoding.GetBytes(value, bytes, 0, Utf8Encodings.Strict);
                 }
                 else
                 {
                     bytes = Utf8Encodings.Strict.GetBytes(value);
+                    if (Array.IndexOf<byte>(bytes, 0) != -1)
+                    {
+                        throw new ArgumentException("A CString cannot contain null bytes.", "value");
+                    }
                     actualLength = bytes.Length;
-                }
-
-                if (Array.IndexOf<byte>(bytes, 0, 0, actualLength) != -1)
-                {
-                    throw new ArgumentException("UTF8 representation of a CString cannot contain null bytes.", "value");
                 }
 
                 _buffer.SetBytes(_position, bytes, 0, actualLength);
@@ -573,10 +585,6 @@ namespace MongoDB.Bson.IO
             {
                 throw new ArgumentNullException("value");
             }
-            if (Array.IndexOf<byte>(value, 0) != -1)
-            {
-                throw new ArgumentException("UTF8 representation of a CString cannot contain null bytes.", "value");
-            }
             ThrowIfDisposed();
 
             var length = value.Length;
@@ -590,10 +598,18 @@ namespace MongoDB.Bson.IO
         }
 
         /// <inheritdoc/>
+        public override void WriteDecimal128(Decimal128 value)
+        {
+            ThrowIfDisposed();
+            WriteInt64((long)value.GetIEEELowBits());
+            WriteInt64((long)value.GetIEEEHighBits());
+        }
+
+        /// <inheritdoc/>
         public override void WriteDouble(double value)
         {
             ThrowIfDisposed();
-            
+
             PrepareToWrite(8);
 
             var bytes = BitConverter.GetBytes(value);
@@ -606,7 +622,7 @@ namespace MongoDB.Bson.IO
         public override void WriteInt32(int value)
         {
             ThrowIfDisposed();
-            
+
             PrepareToWrite(4);
 
             var segment = _buffer.AccessBackingBytes(_position);
@@ -633,7 +649,7 @@ namespace MongoDB.Bson.IO
         public override void WriteInt64(long value)
         {
             ThrowIfDisposed();
-            
+
             PrepareToWrite(8);
 
             var bytes = BitConverter.GetBytes(value);
@@ -646,13 +662,13 @@ namespace MongoDB.Bson.IO
         public override void WriteObjectId(ObjectId value)
         {
             ThrowIfDisposed();
-            
+
             PrepareToWrite(12);
 
             var segment = _buffer.AccessBackingBytes(_position);
             if (segment.Count >= 12)
             {
-                value.GetBytes(segment.Array, segment.Offset);
+                value.ToByteArray(segment.Array, segment.Offset);
             }
             else
             {
@@ -667,7 +683,7 @@ namespace MongoDB.Bson.IO
         public override void WriteString(string value, UTF8Encoding encoding)
         {
             ThrowIfDisposed();
-            
+
             var maxLength = encoding.GetMaxByteCount(value.Length) + 5;
             PrepareToWrite(maxLength);
 

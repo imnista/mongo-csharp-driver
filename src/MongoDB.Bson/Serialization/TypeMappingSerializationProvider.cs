@@ -1,4 +1,4 @@
-﻿/* Copyright 2010-2014 MongoDB Inc.
+﻿/* Copyright 2010-present MongoDB Inc.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -15,6 +15,7 @@
 
 using System;
 using System.Collections.Concurrent;
+using System.Reflection;
 
 namespace MongoDB.Bson.Serialization
 {
@@ -36,20 +37,15 @@ namespace MongoDB.Bson.Serialization
         }
 
         // public methods
-        /// <summary>
-        /// Gets the serializer for the specified <paramref name="type" />.
-        /// </summary>
-        /// <param name="type">The type.</param>
-        /// <returns>
-        /// The serializer.
-        /// </returns>
-        public override IBsonSerializer GetSerializer(Type type)
+        /// <inheritdoc/>
+        public override IBsonSerializer GetSerializer(Type type, IBsonSerializerRegistry serializerRegistry)
         {
             if (type == null)
             {
                 throw new ArgumentNullException("type");
             }
-            if (type.IsGenericType && type.ContainsGenericParameters)
+            var typeInfo = type.GetTypeInfo();
+            if (typeInfo.IsGenericType && typeInfo.ContainsGenericParameters)
             {
                 var message = string.Format("Generic type {0} has unassigned type parameters.", BsonUtils.GetFriendlyTypeName(type));
                 throw new ArgumentException(message, "type");
@@ -58,15 +54,15 @@ namespace MongoDB.Bson.Serialization
             Type serializerType;
             if (_serializerTypes.TryGetValue(type, out serializerType))
             {
-                return CreateSerializer(serializerType);
+                return CreateSerializer(serializerType, serializerRegistry);
             }
 
-            if (type.IsGenericType && !type.ContainsGenericParameters)
+            if (typeInfo.IsGenericType && !typeInfo.ContainsGenericParameters)
             {
                 Type serializerTypeDefinition;
                 if (_serializerTypes.TryGetValue(type.GetGenericTypeDefinition(), out serializerTypeDefinition))
                 {
-                    return CreateGenericSerializer(serializerTypeDefinition, type.GetGenericArguments());
+                    return CreateGenericSerializer(serializerTypeDefinition, type.GetTypeInfo().GetGenericArguments(), serializerRegistry);
                 }
             }
 
@@ -88,17 +84,19 @@ namespace MongoDB.Bson.Serialization
             {
                 throw new ArgumentNullException("serializerType");
             }
-            if (type.ContainsGenericParameters != serializerType.ContainsGenericParameters)
+            var typeInfo = type.GetTypeInfo();
+            var serializerTypeInfo = serializerType.GetTypeInfo();
+            if (typeInfo.ContainsGenericParameters != serializerTypeInfo.ContainsGenericParameters)
             {
                 throw new ArgumentException("The type and the serializerType must have the same number of type parameters.");
             }
-            if (type.ContainsGenericParameters)
+            if (typeInfo.ContainsGenericParameters)
             {
-                if (!type.IsGenericTypeDefinition || !serializerType.IsGenericTypeDefinition)
+                if (!typeInfo.IsGenericTypeDefinition || !serializerTypeInfo.IsGenericTypeDefinition)
                 {
                     throw new ArgumentException("A generic type must either have all or none of the type parameters assigned.");
                 }
-                if (type.GetGenericArguments().Length != serializerType.GetGenericArguments().Length)
+                if (type.GetTypeInfo().GetGenericArguments().Length != serializerType.GetTypeInfo().GetGenericArguments().Length)
                 {
                     throw new ArgumentException("The type and the serializerType must have the same number of type parameters.");
                 }

@@ -1,4 +1,4 @@
-﻿/* Copyright 2010-2014 MongoDB Inc.
+﻿/* Copyright 2010-present MongoDB Inc.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -26,7 +26,9 @@ namespace MongoDB.Driver
     /// <summary>
     /// Credential to access a MongoDB database.
     /// </summary>
+#if NET452
     [Serializable]
+#endif
     public class MongoCredential : IEquatable<MongoCredential>
     {
         // private fields
@@ -39,7 +41,11 @@ namespace MongoDB.Driver
         /// <summary>
         /// Initializes a new instance of the <see cref="MongoCredential" /> class.
         /// </summary>
-        /// <param name="mechanism">Mechanism to authenticate with.</param>
+        /// <param name="mechanism">Mechanism to authenticate with.
+        /// In .NET Standard, authenticating via SCRAM-SHA-256 may not work with non-ASCII passwords because SaslPrep is
+        /// not fully implemented due to the lack of a string normalization function in .NET Standard 1.5.
+        /// Normalizing the password into Unicode Normalization Form KC beforehand MAY help.
+        /// SCRAM-SHA-1 is the recommended alternative for now.</param>
         /// <param name="identity">The identity.</param>
         /// <param name="evidence">The evidence.</param>
         public MongoCredential(string mechanism, MongoIdentity identity, MongoIdentityEvidence evidence)
@@ -78,6 +84,10 @@ namespace MongoDB.Driver
 
         /// <summary>
         /// Gets the mechanism to authenticate with.
+        /// In .NET Standard, authenticating via SCRAM-SHA-256 may not work with non-ASCII passwords because SaslPrep is
+        /// not fully implemented due to the lack of a string normalization function in .NET Standard 1.5.
+        /// Normalizing the password into Unicode Normalization Form KC beforehand MAY help.
+        /// SCRAM-SHA-1 is the recommended alternative for now.
         /// </summary>
         public string Mechanism
         {
@@ -144,6 +154,10 @@ namespace MongoDB.Driver
         // public static methods
         /// <summary>
         /// Creates a default credential.
+        /// In .NET Standard, authenticating via SCRAM-SHA-256 may not work with non-ASCII passwords because SaslPrep is
+        /// not fully implemented due to the lack of a string normalization function in .NET Standard 1.5.
+        /// Normalizing the password into Unicode Normalization Form KC beforehand MAY help.
+        /// SCRAM-SHA-1 is the recommended alternative for now.
         /// </summary>
         /// <param name="databaseName">Name of the database.</param>
         /// <param name="username">The username.</param>
@@ -159,6 +173,12 @@ namespace MongoDB.Driver
 
         /// <summary>
         /// Creates a default credential.
+        /// Less secure when used in conjunction with SCRAM-SHA-256, due to the need to store the password in a managed
+        /// string in order to SaslPrep it.
+        /// In .NET Standard, authenticating via SCRAM-SHA-256 may not work with non-ASCII passwords because SaslPrep is
+        /// not fully implemented due to the lack of a string normalization function in .NET Standard 1.5.
+        /// Normalizing the password into Unicode Normalization Form KC beforehand MAY help.
+        /// SCRAM-SHA-1 is the recommended alternative for now.
         /// </summary>
         /// <param name="databaseName">Name of the database.</param>
         /// <param name="username">The username.</param>
@@ -221,6 +241,7 @@ namespace MongoDB.Driver
         /// <param name="username">The username.</param>
         /// <param name="password">The password.</param>
         /// <returns>A credential for MONGODB-CR.</returns>
+        [Obsolete("MONGODB-CR was replaced by SCRAM-SHA-1 in MongoDB 3.0, and is now deprecated.")]
         public static MongoCredential CreateMongoCRCredential(string databaseName, string username, string password)
         {
             return FromComponents("MONGODB-CR",
@@ -236,6 +257,7 @@ namespace MongoDB.Driver
         /// <param name="username">The username.</param>
         /// <param name="password">The password.</param>
         /// <returns>A credential for MONGODB-CR.</returns>
+        [Obsolete("MONGODB-CR was replaced by SCRAM-SHA-1 in MongoDB 3.0, and is now deprecated.")]
         public static MongoCredential CreateMongoCRCredential(string databaseName, string username, SecureString password)
         {
             return FromComponents("MONGODB-CR",
@@ -245,7 +267,7 @@ namespace MongoDB.Driver
         }
 
         /// <summary>
-        /// Creates a credential used with MONGODB-CR.
+        /// Creates a credential used with MONGODB-X509.
         /// </summary>
         /// <param name="username">The username.</param>
         /// <returns>A credential for MONGODB-X509.</returns>
@@ -377,21 +399,28 @@ namespace MongoDB.Driver
             var passwordEvidence = _evidence as PasswordEvidence;
             if (passwordEvidence != null)
             {
+                var insecurePassword = MongoUtils.ToInsecureString(passwordEvidence.SecurePassword);
                 var credential = new UsernamePasswordCredential(
                     _identity.Source,
                     _identity.Username,
-                    MongoUtils.ToInsecureString(passwordEvidence.SecurePassword));
+                    insecurePassword);
                 if (_mechanism == null)
                 {
                     return new DefaultAuthenticator(credential);
                 }
+#pragma warning disable 618
                 else if (_mechanism == MongoDBCRAuthenticator.MechanismName)
                 {
                     return new MongoDBCRAuthenticator(credential);
+#pragma warning restore 618
                 }
                 else if (_mechanism == ScramSha1Authenticator.MechanismName)
                 {
                     return new ScramSha1Authenticator(credential);
+                }
+                else if (_mechanism == ScramSha256Authenticator.MechanismName)
+                {
+                    return new ScramSha256Authenticator(credential);
                 }
                 else if (_mechanism == PlainAuthenticator.MechanismName)
                 {
@@ -444,17 +473,13 @@ namespace MongoDB.Driver
         // private static methods
         private static MongoCredential FromComponents(string mechanism, string source, string username, MongoIdentityEvidence evidence)
         {
-            if (string.IsNullOrEmpty(username))
-            {
-                return null;
-            }
-
             var defaultedMechanism = (mechanism ?? "DEFAULT").Trim().ToUpperInvariant();
             switch (defaultedMechanism)
             {
                 case "DEFAULT":
                 case "MONGODB-CR":
                 case "SCRAM-SHA-1":
+                case "SCRAM-SHA-256":
                     // it is allowed for a password to be an empty string, but not a username
                     source = source ?? "admin";
                     if (evidence == null || !(evidence is PasswordEvidence))
@@ -477,7 +502,7 @@ namespace MongoDB.Driver
 
                     return new MongoCredential(
                         mechanism,
-                        new MongoExternalIdentity(username),
+                        new MongoX509Identity(username),
                         evidence);
                 case "GSSAPI":
                     // always $external for GSSAPI.  

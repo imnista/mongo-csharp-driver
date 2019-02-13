@@ -1,4 +1,4 @@
-﻿/* Copyright 2010-2014 MongoDB Inc.
+﻿/* Copyright 2010-present MongoDB Inc.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -29,7 +29,7 @@ using MongoDB.Driver.Core.WireProtocol.Messages.Encoders;
 
 namespace MongoDB.Driver.Core.Operations
 {
-    internal class BulkUpdateOperationEmulator : BulkUnmixedWriteOperationEmulatorBase
+    internal class BulkUpdateOperationEmulator : BulkUnmixedWriteOperationEmulatorBase<UpdateRequest>
     {
         // constructors
         public BulkUpdateOperationEmulator(
@@ -41,19 +41,49 @@ namespace MongoDB.Driver.Core.Operations
         }
 
         // methods
-        protected override Task<WriteConcernResult> ExecuteProtocolAsync(IChannelHandle channel, WriteRequest request, CancellationToken cancellationToken)
+        protected override WriteConcernResult ExecuteProtocol(IChannelHandle channel, UpdateRequest request, CancellationToken cancellationToken)
         {
-            var updateRequest = (UpdateRequest)request;
+            if (request.Collation != null)
+            {
+                throw new NotSupportedException("BulkUpdateOperationEmulator does not support collations.");
+            }
+            if (request.ArrayFilters != null)
+            {
+                throw new NotSupportedException("BulkUpdateOperationEmulator does not support arrayFilters.");
+            }
+
+            return channel.Update(
+                CollectionNamespace,
+                MessageEncoderSettings,
+                WriteConcern,
+                request.Filter,
+                request.Update,
+                ElementNameValidatorFactory.ForUpdateType(request.UpdateType),
+                request.IsMulti,
+                request.IsUpsert,
+                cancellationToken);
+        }
+
+        protected override Task<WriteConcernResult> ExecuteProtocolAsync(IChannelHandle channel, UpdateRequest request, CancellationToken cancellationToken)
+        {
+            if (request.Collation != null)
+            {
+                throw new NotSupportedException("BulkUpdateOperationEmulator does not support collations.");
+            }
+            if (request.ArrayFilters != null)
+            {
+                throw new NotSupportedException("BulkUpdateOperationEmulator does not support arrayFilters.");
+            }
 
             return channel.UpdateAsync(
                 CollectionNamespace,
                 MessageEncoderSettings,
                 WriteConcern,
-                updateRequest.Filter,
-                updateRequest.Update,
-                ElementNameValidatorFactory.ForUpdateType(updateRequest.UpdateType),
-                updateRequest.IsMulti,
-                updateRequest.IsUpsert,
+                request.Filter,
+                request.Update,
+                ElementNameValidatorFactory.ForUpdateType(request.UpdateType),
+                request.IsMulti,
+                request.IsUpsert,
                 cancellationToken);
         }
     }

@@ -1,4 +1,4 @@
-﻿/* Copyright 2010-2014 MongoDB Inc.
+/* Copyright 2010-present MongoDB Inc.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -27,10 +27,13 @@ namespace MongoDB.Driver
     /// Model for replacing a single document.
     /// </summary>
     /// <typeparam name="TDocument">The type of the document.</typeparam>
+#if NET452
     [Serializable]
+#endif
     public sealed class ReplaceOneModel<TDocument> : WriteModel<TDocument>
     {
         // fields
+        private Collation _collation;
         private readonly FilterDefinition<TDocument> _filter;
         private bool _isUpsert;
         private readonly TDocument _replacement;
@@ -43,11 +46,20 @@ namespace MongoDB.Driver
         /// <param name="replacement">The replacement.</param>
         public ReplaceOneModel(FilterDefinition<TDocument> filter, TDocument replacement)
         {
-            _filter = Ensure.IsNotNull(filter, "filter");
+            _filter = Ensure.IsNotNull(filter, nameof(filter));
             _replacement = replacement;
         }
 
         // properties
+        /// <summary>
+        /// Gets or sets the collation.
+        /// </summary>
+        public Collation Collation
+        {
+            get { return _collation; }
+            set { _collation = value; }
+        }
+
         /// <summary>
         /// Gets the filter.
         /// </summary>

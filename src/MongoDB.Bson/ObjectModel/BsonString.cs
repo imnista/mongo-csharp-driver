@@ -1,4 +1,4 @@
-﻿/* Copyright 2010-2014 MongoDB Inc.
+﻿/* Copyright 2010-present MongoDB Inc.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -21,14 +21,16 @@ namespace MongoDB.Bson
     /// <summary>
     /// Represents a BSON string value.
     /// </summary>
+#if NET452
     [Serializable]
+#endif
     public class BsonString : BsonValue, IComparable<BsonString>, IEquatable<BsonString>
     {
         // private static fields
         private static BsonString __emptyInstance = new BsonString("");
 
         // private fields
-        private string _value;
+        private readonly string _value;
 
         // constructors
         /// <summary>
@@ -87,6 +89,10 @@ namespace MongoDB.Bson
         /// <returns>A BsonString.</returns>
         public static implicit operator BsonString(string value)
         {
+            if (value != null && value.Length == 0)
+            {
+                return __emptyInstance;
+            }
             return new BsonString(value);
         }
 
@@ -205,6 +211,18 @@ namespace MongoDB.Bson
             return _value != "";
         }
 
+        /// <inheritdoc/>
+        public override decimal ToDecimal()
+        {
+            return JsonConvert.ToDecimal(_value);
+        }
+
+        /// <inheritdoc/>
+        public override Decimal128 ToDecimal128()
+        {
+            return JsonConvert.ToDecimal128(_value);
+        }
+
         /// <summary>
         /// Converts this BsonValue to a Double.
         /// </summary>
@@ -240,5 +258,110 @@ namespace MongoDB.Bson
         {
             return _value;
         }
+
+        // protected methods
+        /// <inheritdoc/>
+        protected override TypeCode IConvertibleGetTypeCodeImplementation()
+        {
+            return TypeCode.String;
+        }
+
+        /// <inheritdoc/>
+        protected override byte IConvertibleToByteImplementation(IFormatProvider provider)
+        {
+            return Convert.ToByte(_value, provider);
+        }
+
+        /// <inheritdoc/>
+        protected override bool IConvertibleToBooleanImplementation(IFormatProvider provider)
+        {
+            return Convert.ToBoolean(_value, provider);
+        }
+
+        /// <inheritdoc/>
+        protected override char IConvertibleToCharImplementation(IFormatProvider provider)
+        {
+            return Convert.ToChar(_value, provider);
+        }
+
+        /// <inheritdoc/>
+        protected override DateTime IConvertibleToDateTimeImplementation(IFormatProvider provider)
+        {
+            return Convert.ToDateTime(_value, provider);
+        }
+
+        /// <inheritdoc/>
+        protected override decimal IConvertibleToDecimalImplementation(IFormatProvider provider)
+        {
+            return Convert.ToDecimal(_value, provider);
+        }
+
+        /// <inheritdoc/>
+        protected override double IConvertibleToDoubleImplementation(IFormatProvider provider)
+        {
+            return Convert.ToDouble(_value, provider);
+        }
+
+        /// <inheritdoc/>
+        protected override short IConvertibleToInt16Implementation(IFormatProvider provider)
+        {
+            return Convert.ToInt16(_value, provider);
+        }
+
+        /// <inheritdoc/>
+        protected override int IConvertibleToInt32Implementation(IFormatProvider provider)
+        {
+            return Convert.ToInt32(_value, provider);
+        }
+
+        /// <inheritdoc/>
+        protected override long IConvertibleToInt64Implementation(IFormatProvider provider)
+        {
+            return Convert.ToInt64(_value, provider);
+        }
+
+        /// <inheritdoc/>
+#pragma warning disable 3002
+        protected override sbyte IConvertibleToSByteImplementation(IFormatProvider provider)
+        {
+            return Convert.ToSByte(_value, provider);
+        }
+#pragma warning restore
+
+        /// <inheritdoc/>
+        protected override float IConvertibleToSingleImplementation(IFormatProvider provider)
+        {
+            return Convert.ToSingle(_value, provider);
+        }
+
+        /// <inheritdoc/>
+        protected override string IConvertibleToStringImplementation(IFormatProvider provider)
+        {
+            return _value;
+        }
+
+        /// <inheritdoc/>
+#pragma warning disable 3002
+        protected override ushort IConvertibleToUInt16Implementation(IFormatProvider provider)
+        {
+            return Convert.ToUInt16(_value, provider);
+        }
+#pragma warning restore
+
+        /// <inheritdoc/>
+#pragma warning disable 3002
+        protected override uint IConvertibleToUInt32Implementation(IFormatProvider provider)
+        {
+            return Convert.ToUInt32(_value, provider);
+        }
+#pragma warning restore
+
+        /// <inheritdoc/>
+#pragma warning disable 3002
+        protected override ulong IConvertibleToUInt64Implementation(IFormatProvider provider)
+        {
+            return Convert.ToUInt64(_value, provider);
+        }
+#pragma warning restore
     }
 }

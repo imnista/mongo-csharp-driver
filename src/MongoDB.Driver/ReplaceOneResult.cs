@@ -1,4 +1,4 @@
-﻿/* Copyright 2010-2014 MongoDB Inc.
+/* Copyright 2010-present MongoDB Inc.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -46,7 +46,7 @@ namespace MongoDB.Driver
 
         // properties
         /// <summary>
-        /// Gets a value indicating whether the result is acknowleded.
+        /// Gets a value indicating whether the result is acknowledged.
         /// </summary>
         public abstract bool IsAcknowledged { get; }
 
